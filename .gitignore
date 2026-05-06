@@ -1,4 +1,7 @@
 startup_scripts/firecracker/base/**
+startup_scripts/firecracker/extracted-*/**
 startup_scripts/firecracker/keys/**
 startup_scripts/firecracker/images/**
+startup_scripts/firecracker/overlays/**
 startup_scripts/firecracker/release*/**
+startup_scripts/firecracker/secrets/**

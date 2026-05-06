@@ -116,6 +116,10 @@ sudo usermod -aG kvm $USER
 ├── keys/
 │   ├── debian-trixie.id_rsa       # SSH private key (DO NOT COMMIT)
 │   └── debian-trixie.id_rsa.pub  # SSH public key
+├── config/
+│   └── opencode-config.json       # OpenCode configuration template
+├── secrets/                        # API keys (DO NOT COMMIT)
+│   └── opencode-api-key           # API key for OpenCode provider
 ├── release-v1.15.1-x86_64/
 │   ├── firecracker-v1.15.1-x86_64
 │   ├── jailer-v1.15.1-x86_64
@@ -164,8 +168,10 @@ sudo ./init_base.sh
 This will:
 - Download the Firecracker kernel
 - Run `debootstrap` for a minimal Debian Trixie install
-- Install SSH, Python 3, Node.js, and common utilities
+- Install SSH, Python 3, Node.js, OpenCode, and common utilities
 - Create SSH keys for root login
+- Configure OpenCode with `config/opencode-config.json`
+- Install the API key from `secrets/opencode-api-key`
 - Generate the ext4 base image at `base/rootfs.ext4`
 
 **Note:** This step requires internet access and takes several minutes.
@@ -338,6 +344,7 @@ The base rootfs includes:
 - **SSH Server** — Root login with key-based authentication
 - **Python 3** — With pip and venv support
 - **Node.js** — Installed via nvm (LTS version)
+- **OpenCode** — Installed globally via npm (`opencode-ai@latest`)
 - **uv** — Fast Python package manager by Astral
 - **Common utilities** — curl, wget, git, build-essential, ca-certificates
 
@@ -355,6 +362,25 @@ ip link set eth0 up
 ip route add default via 172.16.0.1 dev eth0
 echo "nameserver 8.8.8.8" > /etc/resolv.conf
 ```
+
+### OpenCode Configuration
+
+The base image includes OpenCode with a pre-configured config at
+`~/.config/opencode/config.json`. To customize it before building:
+
+1. Edit `config/opencode-config.json` with your preferred model and provider
+2. Put your API key in `secrets/opencode-api-key` (plain text, no trailing newline)
+3. Rebuild the base image: `sudo ./init_base.sh`
+
+The config references `~/.secrets/opencode-api-key` for the API key. If the key file
+is missing during build, you can manually create it inside a running VM:
+
+```bash
+echo -n "your-api-key" > ~/.secrets/opencode-api-key
+```
+
+**Note:** The `secrets/` directory should be in `.gitignore` to prevent
+accidentally committing API keys.
 
 ## Security Considerations
 
@@ -483,6 +509,9 @@ Builds the base rootfs image from scratch:
 - Runs debootstrap for Debian Trixie
 - Installs system packages and utilities
 - Configures SSH, networking, and overlay-init
+- Installs Node.js, OpenCode, Python, and uv
+- Configures OpenCode with `config/opencode-config.json`
+- Installs API key from `secrets/opencode-api-key`
 - Generates ext4 image
 
 **Requires:** sudo, debootstrap, internet access

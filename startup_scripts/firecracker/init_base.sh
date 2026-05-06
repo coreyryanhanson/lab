@@ -89,9 +89,9 @@ sudo chroot "$ROOTFS_DIR" /bin/bash -c '
 '
 
 # ============================================================
-# Install nvm + Node.js
+# Install nvm + Node.js + OpenCode
 # ============================================================
-echo "Installing nvm and Node.js..."
+echo "Installing nvm, Node.js, and OpenCode..."
 
 sudo chroot "$ROOTFS_DIR" /bin/bash -c '
     # Install nvm
@@ -101,6 +101,12 @@ sudo chroot "$ROOTFS_DIR" /bin/bash -c '
     export NVM_DIR="/root/.nvm"
     [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
     nvm install --lts
+
+    # Explicitly set default alias (critical for non-interactive shells)
+    nvm alias default "$(nvm current)"
+
+    # Install OpenCode globally
+    npm install -g opencode-ai@latest
 
     # Add nvm to profile for all users
     cat >> /etc/profile.d/nvm.sh << "NVMEOF"
@@ -376,6 +382,42 @@ sudo cp "${KEY_DIR}/debian-trixie.id_rsa.pub" "$ROOTFS_DIR/root/.ssh/authorized_
 sudo chown -R root:root "$ROOTFS_DIR/root/.ssh"
 sudo chmod 700 "$ROOTFS_DIR/root/.ssh"
 sudo chmod 600 "$ROOTFS_DIR/root/.ssh/authorized_keys"
+
+# ============================================================
+# Install OpenCode configuration
+# ============================================================
+echo "Setting up OpenCode config..."
+
+# Create directories
+sudo mkdir -p "$ROOTFS_DIR/root/.config/opencode"
+sudo mkdir -p "$ROOTFS_DIR/root/.secrets"
+
+# Copy config template if it exists
+if [ -f "${SCRIPT_DIR}/config/opencode-config.json" ]; then
+    sudo cp "${SCRIPT_DIR}/config/opencode-config.json" \
+            "$ROOTFS_DIR/root/.config/opencode/config.json"
+    echo "  Config installed from local template"
+else
+    echo "  WARNING: No config/opencode-config.json found"
+    echo "  OpenCode will use default settings"
+fi
+
+# Copy API key if it exists
+if [ -f "${SCRIPT_DIR}/secrets/opencode-api-key" ]; then
+    API_KEY=$(cat "${SCRIPT_DIR}/secrets/opencode-api-key" | tr -d '[:space:]')
+    echo -n "$API_KEY" | sudo tee "$ROOTFS_DIR/root/.secrets/opencode-api-key" > /dev/null
+    sudo chmod 600 "$ROOTFS_DIR/root/.secrets/opencode-api-key"
+    sudo chown root:root "$ROOTFS_DIR/root/.secrets/opencode-api-key"
+    echo "  API key installed"
+else
+    echo "  WARNING: No secrets/opencode-api-key found"
+    echo "  You will need to set the API key manually after booting"
+    echo "  Create: /root/.secrets/opencode-api-key"
+fi
+
+# Secure the directories
+sudo chmod 700 "$ROOTFS_DIR/root/.secrets"
+sudo chmod 700 "$ROOTFS_DIR/root/.config"
 
 # ============================================================
 # Create ext4 image
