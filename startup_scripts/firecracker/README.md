@@ -19,37 +19,41 @@ allows:
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────────┐
-│                      Host                            │
-│  ┌────────────────────────────────────────────────┐ │
-│  │           Network Namespace (fc-vm1)           │ │
-│  │  ┌──────────┐    ┌───────────┐                 │ │
-│  │  │  veth_ns  │◄──►│   tap0    │                 │ │
-│  │  │192.168.100.2   │ 172.16.0.1│                 │ │
-│  │  └──────────┘    └─────┬─────┘                 │ │
-│  │                         │                        │ │
-│  │  ┌─────────────────────▼─────────────────────┐ │ │
-│  │  │           Firecracker VM                   │ │ │
-│  │  │                                            │ │ │
-│  │  │   ┌─────────────────────────┐              │ │ │
-│  │  │   │   OverlayFS (writable)  │              │ │ │
-│  │  │   │   /overlay.ext4          │              │ │ │
-│  │  │   ├─────────────────────────┤              │ │ │
-│  │  │   │   Base rootfs (read-only)│              │ │ │
-│  │  │   │   /rootfs.ext4           │              │ │ │
-│  │  │   └─────────────────────────┘              │ │ │
-│  │  │                                            │ │ │
-│  │  │   eth0: 172.16.0.2/30                     │ │ │
-│  │  └────────────────────────────────────────────┘ │ │
-│  └────────────────────────────────────────────────┘ │
-│        │                                             │
-│  ┌─────▼──────┐                                      │
-│  │  veth_host │                                      │
-│  │192.168.100.1│                                      │
-│  └────────────┘                                       │
-│        │                                              │
-│  [Host routing/NAT → Internet]                       │
-└──────────────────────────────────────────────────────┘
+                     Internet
+                         │
+                         ▼
+┌──────────────────────────────────────────────────────────┐
+│                          Host                              │
+│                                                            │
+│  veth_host: 192.168.100.1/24                               │
+│         │                                                  │
+│         │ veth pair                                        │
+│         ▼                                                  │
+│  ┌──────────── Network Namespace (fc-vm1) ────────────┐   │
+│  │                                                      │   │
+│  │  veth_ns: 192.168.100.2/24                           │   │
+│  │         │                                            │   │
+│  │         │ routing + NAT                              │   │
+│  │         ▼                                            │   │
+│  │  tap0: 172.16.0.1/30                                 │   │
+│  │         │                                            │   │
+│  │         ▼                                            │   │
+│  │  ┌──────────── Firecracker VM ──────────────────┐   │   │
+│  │  │                                                │   │   │
+│  │  │  eth0: 172.16.0.2/30                          │   │   │
+│  │  │                                                │   │   │
+│  │  │  ┌──────── OverlayFS ──────────────────────┐  │   │   │
+│  │  │  │                                          │  │   │   │
+│  │  │  │  Upper: /overlay.ext4 (read-write)       │  │   │   │
+│  │  │  │  Lower: base rootfs  (read-only)         │  │   │   │
+│  │  │  │                                          │  │   │   │
+│  │  │  └──────────────────────────────────────────┘  │   │   │
+│  │  │                                                │   │   │
+│  │  └────────────────────────────────────────────────┘   │   │
+│  │                                                      │   │
+│  └──────────────────────────────────────────────────────┘   │
+│                                                              │
+└──────────────────────────────────────────────────────────────┘
 ```
 
 ### Overlay System
@@ -122,7 +126,9 @@ sudo usermod -aG kvm $USER
 │   └── ...                        # Other overlay images
 ├── config.sh                      # Shared configuration variables
 ├── init_base.sh                   # Build the base rootfs image
-├── create_overlay.sh               # Create a new overlay
+├── create_overlay.sh              # Create a new overlay
+├── extract.sh                     # Extract files from an overlay
+├── inject.sh                      # Inject files into an overlay
 ├── start.sh                       # Start a VM with an overlay
 └── cleanup.sh                     # Stop VM and clean up resources
 ```
@@ -232,6 +238,65 @@ iptables rules.
 ```bash
 ls overlays/*.ext4 | sed 's/overlays\///' | sed 's/\.ext4//'
 ```
+
+### Listing Changed Files in an Overlay
+
+To see what files have been modified or created in an overlay (compared to the base rootfs):
+
+```bash
+./extract.sh my-project --list
+```
+
+This shows:
+- Changed files
+- Changed directories
+- Deleted files (whiteout entries)
+
+Use `-y` to auto-repair if the overlay has a dirty journal:
+
+```bash
+./extract.sh my-project --list -y
+```
+
+### Extracting Files from an Overlay
+
+To copy files from an overlay to the host (VM must be stopped):
+
+```bash
+# Extract a single file
+./extract.sh my-project /root/output.csv
+
+# Extract a directory
+./extract.sh my-project /root/scraped-data/
+
+# Extract to a specific host destination
+./extract.sh my-project /root/results/ ~/backups/results/
+```
+
+Files are extracted to `./extracted-<overlay_name>/` by default.
+
+**Note:** This only extracts files that exist in the overlay layer (changes from the base rootfs). If a file was never modified in the VM, it won't be in the overlay and extraction will fail.
+
+### Injecting Files into an Overlay
+
+To copy files from the host into an overlay (VM must be stopped):
+
+```bash
+# Inject a single file
+./inject.sh my-project ./config.yaml /root/config.yaml
+
+# Inject a directory
+./inject.sh my-project ./scripts/ /root/scripts/
+
+# Inject with custom ownership
+./inject.sh my-project ./data.csv /home/user/data.csv -u 1000 -g 1000
+```
+
+By default, injected files are owned by `root:root`. Use `-u` and `-g` flags to set different UID/GID.
+
+**Directory behavior:** When injecting a directory, its contents are copied into the VM path (not the directory itself). This prevents nested paths like `/root/scripts/scripts/`.
+
+**Important:** The VM must have been booted at least once before injecting files, so the overlay structure is initialized.
 
 ### Installing Packages into an Overlay
 
@@ -433,6 +498,63 @@ Creates a new writable overlay on top of the base rootfs:
 
 **Usage:** `./create_overlay.sh <name>`
 **Output:** `overlays/<name>.ext4`, `overlays/<name>.base_checksum`
+
+### extract.sh
+
+Extracts files from an overlay to the host (VM must be stopped):
+- Checks and repairs dirty ext4 journals
+- Mounts overlay in read-only mode after journal replay
+- Only extracts files from the overlay layer (not base rootfs)
+- Can list changed files without extracting
+
+**Usage:**
+```bash
+# Extract files
+./extract.sh <overlay_name> <vm_path> [host_destination]
+
+# List changed files
+./extract.sh <overlay_name> --list
+
+# Auto-repair dirty filesystem
+./extract.sh <overlay_name> --list -y
+```
+
+**Options:**
+- `-l, --list` — List changed files instead of extracting
+- `-y, --yes` — Automatically repair filesystem if dirty
+
+**Examples:**
+```bash
+./extract.sh my-project /root/output.csv
+./extract.sh my-project /root/results/ ~/backups/
+./extract.sh my-project --list
+```
+
+### inject.sh
+
+Copies files from the host into an overlay (VM must be stopped):
+- Checks and repairs dirty ext4 journals (automatic)
+- Mounts overlay in read-write mode
+- Sets file ownership (default: root:root)
+- Creates parent directories as needed
+
+**Usage:**
+```bash
+./inject.sh <overlay_name> <host_path> <vm_path>
+```
+
+**Options:**
+- `-u, --uid <UID>` — Set file owner UID (default: 0)
+- `-g, --gid <GID>` — Set file group GID (default: 0)
+
+**Examples:**
+```bash
+./inject.sh my-project ./config.yaml /root/config.yaml
+./inject.sh my-project ./scripts/ /root/scripts/
+./inject.sh my-project ./data.csv /home/user/data.csv -u 1000 -g 1000
+```
+
+**Note:** The overlay must have been initialized by booting the VM at least once before injecting files.
 
 ### start.sh
 
