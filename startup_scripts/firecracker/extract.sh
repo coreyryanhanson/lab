@@ -269,7 +269,7 @@ EXTRACTED_NAME=$(basename "$VM_PATH")
 if [ -d "${DEST_DIR}/${EXTRACTED_NAME}" ]; then
     echo "Extracted directory: ${EXTRACTED_NAME}/"
     FILE_COUNT=$(find "$DEST_DIR" -type f | wc -l)
-    find "$DEST_DIR" -type f | head -20 | sed "s|^${DEST_DIR}|."
+    find "$DEST_DIR" -type f | head -20 | sed "s|^${DEST_DIR}/|./|"
     if [ "$FILE_COUNT" -gt 20 ]; then
         echo "... and $((FILE_COUNT - 20)) more files"
     fi
