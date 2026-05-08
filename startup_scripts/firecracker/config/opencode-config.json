@@ -6,6 +6,23 @@
       "options": {
         "apiKey": "{file:~/.secrets/opencode-api-key}"
       }
+    },
+    "local-llama": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Local llama.cpp",
+      "options": {
+        "baseURL": "http://192.168.100.1:8001/v1",
+        "apiKey": "not-needed"
+      },
+      "models": {
+        "llama-local": {
+          "name": "Local Qwen3.6-35B-A3B",
+          "limit": {
+            "context": 262144,
+            "output": 81920
+          }
+        }
+      }
     }
   }
 }

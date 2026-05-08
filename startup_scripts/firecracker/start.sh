@@ -224,6 +224,19 @@ sudo iptables -A FORWARD -i $HOST_IFACE -o $VETH_HOST -m state --state RELATED,E
 sudo iptables -t nat -A POSTROUTING -s ${VETH_SUBNET} -o $HOST_IFACE -j MASQUERADE
 
 # ============================================================
+# Firewall: Allow VM to reach host services (local LLM, etc.)
+# ============================================================
+echo "Configuring firewall for VM access..."
+
+# Allow VM subnet to reach specific host ports
+for PORT in $HOST_SERVICE_PORTS; do
+    sudo firewall-cmd --zone=public --add-rich-rule="rule family=\"ipv4\" source address=\"${VETH_SUBNET}\" port port=\"${PORT}\" protocol=\"tcp\" accept" 2>/dev/null || true
+done
+
+# Disable rp_filter on veth to prevent kernel from dropping VM->host packets
+sudo sysctl -w net.ipv4.conf.fc-veth0.rp_filter=0 > /dev/null 2>&1 || true
+
+# ============================================================
 # Start Firecracker with jailer
 # ============================================================
 echo "Starting Firecracker VM..."

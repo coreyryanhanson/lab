@@ -14,6 +14,8 @@ VM_IP="172.16.0.2"
 VM_ROUTE_MASK="/32"
 MASK="/30"
 FC_MAC="06:00:AC:10:00:02"
+# Host services accessible from VM
+HOST_SERVICE_PORTS="8001"
 # Guest network config (passed via kernel boot args)
 GUEST_IP="${VM_IP}"
 GUEST_GW="${TAP_IP}"

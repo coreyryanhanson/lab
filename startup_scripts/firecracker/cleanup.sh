@@ -20,6 +20,11 @@ sudo pkill -9 -f "jailer.*--id ${VM_ID}" 2>/dev/null || true
 stty sane 2>/dev/null || true
 tput reset 2>/dev/null || true
 
+# Remove firewall rules for VM access
+for PORT in $HOST_SERVICE_PORTS; do
+    sudo firewall-cmd --zone=public --remove-rich-rule="rule family=\"ipv4\" source address=\"${VETH_SUBNET}\" port port=\"${PORT}\" protocol=\"tcp\" accept" 2>/dev/null || true
+done
+
 # Clean namespace iptables
 sudo ip netns exec $NETNS iptables -t nat -D POSTROUTING -s ${VM_IP}${VM_ROUTE_MASK} -o $VETH_NS -j MASQUERADE 2>/dev/null || true
 sudo ip netns exec $NETNS iptables -D FORWARD -i $TAP_DEV -o $VETH_NS -j ACCEPT 2>/dev/null || true
