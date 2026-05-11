@@ -154,6 +154,7 @@ All settings are centralized in `config.sh`. Key variables:
 | `JAILER_GID` | Group ID for jailer process | `1000` |
 | `KERNEL` | Path to kernel binary | `./images/vmlinux-6.1.155` |
 | `BASE_ROOTFS` | Path to base rootfs image | `./base/rootfs.ext4` |
+| `HOST_SERVICE_PORTS` | Host ports accessible from VM (space-separated) | `"8001"` |
 
 ## Usage
 
@@ -199,6 +200,7 @@ sudo ./start.sh my-project
 This will:
 - Verify the overlay checksum matches the current base rootfs
 - Set up the network namespace and routing
+- Configure firewall rules for VM access to host services
 - Bind-mount the base rootfs (read-only) and overlay (read-write)
 - Generate the jailer configuration
 - Start Firecracker inside the jailer
@@ -228,8 +230,8 @@ From the host (if VM is unresponsive):
 sudo ./cleanup.sh
 ```
 
-This forcefully terminates the VM, removes network namespaces, and cleans up
-iptables rules.
+This forcefully terminates the VM, removes network namespaces, cleans up
+iptables rules, and removes firewall rules for VM access.
 
 ## Overlay Management
 
@@ -363,6 +365,31 @@ ip route add default via 172.16.0.1 dev eth0
 echo "nameserver 8.8.8.8" > /etc/resolv.conf
 ```
 
+### Accessing Host Services from the VM
+
+The VM can reach services running on the host (like llama.cpp) at the host-side
+veth IP address (`192.168.100.1` by default). This is not `localhost` — from
+inside the VM, `localhost` refers to the VM itself.
+
+For example, if llama.cpp is running on the host at `http://0.0.0.0:8001`:
+
+```bash
+# Inside the VM
+curl http://192.168.100.1:8001/v1/models
+```
+
+Which ports the VM can access is controlled by `HOST_SERVICE_PORTS` in
+`config.sh`. Add ports there and restart the VM:
+
+```bash
+# Allow VM to reach host ports 8001 (llama.cpp) and 3000 (dev server)
+HOST_SERVICE_PORTS="8001 3000"
+```
+
+**Host services must bind to `0.0.0.0`** (not `127.0.0.1`) for the VM to reach
+them. If a service only listens on localhost, it will be unreachable from the
+VM even if the port is allowed.
+
 ### OpenCode Configuration
 
 The base image includes OpenCode with a pre-configured config at
@@ -392,14 +419,6 @@ The VM runs inside a jailer chroot with:
 - Network namespace isolation
 - Bind-mounted read-only base rootfs
 - Private mount propagation
-
-**Recommendation:** For enhanced security, use the seccomp filter included in
-the Firecracker release:
-
-```bash
-# In start.sh, add to jailer command:
---seccomp-filter /path/to/seccomp-filter-v1.15.1-x86_64.json
-```
 
 ### Overlay Integrity
 
@@ -467,6 +486,18 @@ sudo ip netns exec fc-vm1 ping -c 3 172.16.0.1
 If the namespace doesn't exist, the VM isn't running or wasn't started with
 `start.sh`.
 
+### VM cannot reach host services
+
+If curl from inside the VM fails with "No route to host":
+
+1. Verify the service is listening on `0.0.0.0`, not `127.0.0.1`
+2. Check that the port is in `HOST_SERVICE_PORTS` in `config.sh`
+3. Verify the firewall rule was added:
+
+```bash
+sudo firewall-cmd --zone=public --list-rich-rules
+```
+
 ### Cleanup stuck resources
 
 ```bash
@@ -485,6 +516,9 @@ sudo ip netns del fc-vm1
 
 # Remove veth
 sudo ip link del fc-veth0
+
+# Remove firewall rules
+sudo firewall-cmd --zone=public --remove-rich-rule='rule family="ipv4" source address="192.168.100.0/24" port port="8001" protocol="tcp" accept'
 
 # Unmount bind mounts
 sudo umount /srv/jailer/firecracker-v1.15.1-x86_64/vm1/root/rootfs.ext4
@@ -590,6 +624,7 @@ Copies files from the host into an overlay (VM must be stopped):
 Starts a Firecracker VM with the specified overlay:
 - Validates overlay compatibility
 - Sets up network namespace with routing/NAT
+- Configures firewall rules for VM access to host services
 - Prepares jailer chroot with bind mounts
 - Generates jailer configuration
 - Starts Firecracker daemon
@@ -603,6 +638,7 @@ Stops the VM and cleans up all resources:
 - Terminates Firecracker/jailer processes
 - Removes network namespace and veth pair
 - Cleans iptables rules
+- Removes firewall rules for VM access
 - Unmounts bind mounts
 - Removes jailer chroot directory
 - Resets overlay file ownership
