@@ -16,6 +16,9 @@ MASK="/30"
 FC_MAC="06:00:AC:10:00:02"
 # Host services accessible from VM
 HOST_SERVICE_PORTS="8001"
+# VM resources
+VM_VCPUS=4
+VM_MEM_MIB=8192
 # Guest network config (passed via kernel boot args)
 GUEST_IP="${VM_IP}"
 GUEST_GW="${TAP_IP}"

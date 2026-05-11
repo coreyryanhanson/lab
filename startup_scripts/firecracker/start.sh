@@ -188,8 +188,8 @@ sudo tee "$JAILER_CONFIG" > /dev/null << EOF
     }
   ],
   "machine-config": {
-    "vcpu_count": 2,
-    "mem_size_mib": 1024
+    "vcpu_count": ${VM_VCPUS},
+    "mem_size_mib": ${VM_MEM_MIB}
   }
 }
 EOF
