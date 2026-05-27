@@ -1,6 +1,6 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "model": "venice/qwen3-6-27b",
+  "model": "local-llama/llama-local",
   "provider": {
     "venice": {
       "options": {
