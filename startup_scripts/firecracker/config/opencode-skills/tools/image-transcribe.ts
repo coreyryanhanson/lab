@@ -1,5 +1,5 @@
 import { tool } from "@opencode-ai/plugin";
-import { OPENCODE_API_URL, DEFAULT_MODEL, getApiKey, imageToBase64, resolveFilePath } from "../utils/vision-api.ts";
+import { OPENCODE_API_URL, DEFAULT_MODEL, getApiKey, imageToBase64, resolveFilePath, isVeniceUrl } from "../utils/vision-api.ts";
 
 async function transcribeText(base64Image, apiKey, model) {
   const response = await fetch(OPENCODE_API_URL, {
@@ -29,7 +29,7 @@ async function transcribeText(base64Image, apiKey, model) {
         },
       ],
       temperature: 0.3,
-      opencode_parameters: { disable_thinking: true },
+      ...(isVeniceUrl() ? { venice_parameters: { disable_thinking: true } } : {}),
     }),
   });
 

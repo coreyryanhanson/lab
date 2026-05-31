@@ -5,6 +5,10 @@ import os from "os";
 export const DEFAULT_MODEL = "qwen3-6-27b";
 export const OPENCODE_API_URL = process.env.OPENCODE_API_URL || "https://api.venice.ai/api/v1/chat/completions";
 
+export function isVeniceUrl(): boolean {
+  return OPENCODE_API_URL.includes("venice.ai");
+}
+
 export function getApiKey(): string | null {
   if (process.env.OPENCODE_API_KEY) return process.env.OPENCODE_API_KEY;
   const keyFile = path.join(os.homedir(), ".secrets", "opencode-api-key");

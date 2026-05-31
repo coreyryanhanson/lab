@@ -1,5 +1,5 @@
 import { tool } from "@opencode-ai/plugin";
-import { OPENCODE_API_URL, DEFAULT_MODEL, getApiKey, imageToBase64, resolveFilePath } from "../utils/vision-api.ts";
+import { OPENCODE_API_URL, DEFAULT_MODEL, getApiKey, imageToBase64, resolveFilePath, isVeniceUrl } from "../utils/vision-api.ts";
 
 const LENGTH_CONFIG = {
   short: { maxTokens: 100, prompt: "in one concise sentence suitable for alt text" },
@@ -42,7 +42,7 @@ async function generateDescription(base64Image, apiKey, model, length, style) {
       ],
       max_tokens: config.maxTokens,
       temperature: 0.3,
-      opencode_parameters: { disable_thinking: true },
+      ...(isVeniceUrl() ? { venice_parameters: { disable_thinking: true } } : {}),
     }),
   });
 
