@@ -66,7 +66,13 @@ sudo chroot "$ROOTFS_DIR" /bin/bash -c '
         build-essential \
         ca-certificates \
         e2fsprogs \
-        gnupg
+        gnupg \
+        locales
+
+    # Generate locale
+    sed -i "s/^# *en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/" /etc/locale.gen
+    locale-gen
+    echo "LANG=en_US.UTF-8" > /etc/default/locale
 
     systemctl enable ssh
 
