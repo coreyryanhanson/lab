@@ -455,6 +455,42 @@ sudo rm -rf "$ROOTFS_DIR/tmp/pi-config"
 echo "  Pi config, auth, models, and extensions installed"
 
 # ============================================================
+# Install SearXNG (metasearch engine for agent web search)
+# ============================================================
+echo "Installing SearXNG..."
+
+sudo mkdir -p "$ROOTFS_DIR/etc/searxng"
+sudo cp "${SCRIPT_DIR}/config/searxng/settings.yml" "$ROOTFS_DIR/etc/searxng/"
+sudo cp "${SCRIPT_DIR}/config/searxng/searxng.service" "$ROOTFS_DIR/etc/systemd/system/"
+
+sudo chroot "$ROOTFS_DIR" /bin/bash -c '
+    # Create searxng system user
+    useradd --system --shell /bin/bash --home-dir /usr/local/searxng searxng
+
+    # Clone SearXNG source
+    git clone --depth 1 https://github.com/searxng/searxng.git /usr/local/searxng/searxng-src
+
+    # Create Python venv with uv and install SearXNG + Granian
+    uv venv /usr/local/searxng/searx-pyenv
+    # Build deps must be installed before editable install (searx/__init__.py imports msgspec at setup time)
+    VIRTUAL_ENV=/usr/local/searxng/searx-pyenv /usr/local/bin/uv pip install setuptools wheel msgspec pyyaml typing-extensions pybind11
+    VIRTUAL_ENV=/usr/local/searxng/searx-pyenv /usr/local/bin/uv pip install -e /usr/local/searxng/searxng-src --no-build-isolation
+    VIRTUAL_ENV=/usr/local/searxng/searx-pyenv /usr/local/bin/uv pip install granian
+
+    # Generate a random secret key
+    SEARXNG_SECRET=$(openssl rand -hex 32)
+    sed -i "s/ultrasecretkey/$SEARXNG_SECRET/g" /etc/searxng/settings.yml
+
+    # Fix permissions
+    chown -R searxng:searxng /usr/local/searxng /etc/searxng
+
+    # Enable service
+    systemctl enable searxng
+'
+
+echo "  SearXNG installed (listening on http://127.0.0.1:8888)"
+
+# ============================================================
 # Inject environment variables into VM
 # ============================================================
 echo "Injecting environment variables into VM..."

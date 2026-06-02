@@ -1,0 +1,23 @@
+[Unit]
+Description=SearXNG metasearch engine
+After=network.target
+
+[Service]
+Type=simple
+User=searxng
+Group=searxng
+WorkingDirectory=/usr/local/searxng/searxng-src/searx
+Environment=SEARXNG_SETTINGS_PATH=/etc/searxng/settings.yml
+ExecStart=/usr/local/searxng/searx-pyenv/bin/granian \
+    --interface wsgi \
+    --host 127.0.0.1 \
+    --port 8888 \
+    --workers 2 \
+    --threads 2 \
+    --log-level warning \
+    searx.webapp:app
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
