@@ -18,7 +18,7 @@
         "llama-local": {
           "name": "Local Qwen3.6-35B-A3B",
           "limit": {
-            "context": 262144,
+            "context": 98304,
             "output": 81920
           }
         }

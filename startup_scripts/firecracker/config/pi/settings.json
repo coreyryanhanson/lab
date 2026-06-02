@@ -1,0 +1,6 @@
+{
+  "lastChangelogVersion": "0.78.0",
+  "defaultProvider": "local-llama",
+  "defaultModel": "llama-local",
+  "defaultThinkingLevel": "medium"
+}

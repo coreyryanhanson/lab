@@ -416,6 +416,36 @@ sudo chmod 700 "$ROOTFS_DIR/root/.config"
 echo "  OpenCode config, tools, utils, and skills installed"
 
 # ============================================================
+# Install Pi Coding Agent
+# ============================================================
+echo "Installing Pi Coding Agent..."
+
+sudo chroot "$ROOTFS_DIR" /bin/bash -c '
+    npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+    echo "  Pi agent installed: $(pi --version 2>/dev/null || true)"
+'
+
+# ============================================================
+# Install Pi configuration (auth, settings, models, extensions)
+# ============================================================
+echo "Setting up Pi config..."
+
+sudo cp -a "${SCRIPT_DIR}/config/pi" "$ROOTFS_DIR/tmp/pi-config"
+
+sudo chroot "$ROOTFS_DIR" /bin/bash -c '
+    PI_DIR="$HOME/.pi/agent"
+    mkdir -p "$PI_DIR/extensions"
+
+    [ -f /tmp/pi-config/auth.json ]     && cp /tmp/pi-config/auth.json "$PI_DIR/"
+    [ -f /tmp/pi-config/settings.json ] && cp /tmp/pi-config/settings.json "$PI_DIR/"
+    [ -f /tmp/pi-config/models.json ]   && cp /tmp/pi-config/models.json "$PI_DIR/"
+    [ -d /tmp/pi-config/extensions ]    && cp -r /tmp/pi-config/extensions/* "$PI_DIR/extensions/"
+'
+
+sudo rm -rf "$ROOTFS_DIR/tmp/pi-config"
+echo "  Pi config, auth, models, and extensions installed"
+
+# ============================================================
 # Inject environment variables into VM
 # ============================================================
 echo "Injecting environment variables into VM..."
