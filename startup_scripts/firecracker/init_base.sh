@@ -47,6 +47,12 @@ fi
 # ============================================================
 echo "Configuring base system..."
 
+# Mount virtual filesystems for chroot operations
+sudo mkdir -p "$ROOTFS_DIR/proc" "$ROOTFS_DIR/sys" "$ROOTFS_DIR/dev"
+sudo mount -t proc proc "$ROOTFS_DIR/proc"
+sudo mount -t sysfs sysfs "$ROOTFS_DIR/sys"
+sudo mount -t devtmpfs devtmpfs "$ROOTFS_DIR/dev"
+
 sudo chroot "$ROOTFS_DIR" /bin/bash -c '
     # Set root password
     echo "root:root" | chpasswd
@@ -112,8 +118,7 @@ sudo chroot "$ROOTFS_DIR" /bin/bash -c '
     # Explicitly set default alias (critical for non-interactive shells)
     nvm alias default "$(nvm current)"
 
-    # Install OpenCode globally (two steps: baseline binary first so postinstall finds it)
-    npm install -g opencode-linux-x64-baseline
+    # Install OpenCode globally
     npm install -g opencode-ai@latest
 
     # Add nvm to profile for all users
@@ -463,6 +468,9 @@ sudo chroot "$ROOTFS_DIR" /bin/bash -c '
     git config --global user.email "'"${GIT_EMAIL}"'"
     echo "  Git configured: '"${GIT_NAME}"' <'"${GIT_EMAIL}"'>"
 '
+
+# Unmount virtual filesystems before creating image
+sudo umount "$ROOTFS_DIR/proc" "$ROOTFS_DIR/sys" "$ROOTFS_DIR/dev" 2>/dev/null || true
 
 # ============================================================
 # Create ext4 image
