@@ -112,8 +112,8 @@ sudo chroot "$ROOTFS_DIR" /bin/bash -c '
     # Explicitly set default alias (critical for non-interactive shells)
     nvm alias default "$(nvm current)"
 
-    # Install OpenCode globally
-    npm install -g opencode-ai@latest
+    # Install OpenCode globally (pre-install baseline variant for older CPUs)
+    npm install -g opencode-linux-x64-baseline opencode-ai@latest
 
     # Add nvm to profile for all users
     cat >> /etc/profile.d/nvm.sh << "NVMEOF"
