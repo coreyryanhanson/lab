@@ -4,7 +4,7 @@
   "provider": {
     "venice": {
       "options": {
-        "apiKey": "{file:~/.secrets/venice-key}"
+        "apiKey": "{env:VENICE_API_KEY}"
       }
     },
     "local-llama": {

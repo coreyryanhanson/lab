@@ -1,8 +1,8 @@
 import { tool } from "@opencode-ai/plugin";
-import { OPENCODE_API_URL, DEFAULT_MODEL, getApiKey, imageToBase64, resolveFilePath, isVeniceUrl } from "../utils/vision-api.ts";
+import { VENICE_API_URL, DEFAULT_MODEL, getApiKey, imageToBase64, resolveFilePath, isVeniceUrl } from "../utils/vision-api.ts";
 
 async function transcribeText(base64Image, apiKey, model) {
-  const response = await fetch(OPENCODE_API_URL, {
+  const response = await fetch(VENICE_API_URL, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -53,7 +53,7 @@ export default tool({
   async execute(args, context) {
     const apiKey = getApiKey();
     if (!apiKey) {
-      return "Error: OpenCode API key not found. Set OPENCODE_API_KEY env var or place key in ~/.secrets/opencode-api-key.";
+      return "Error: Venice API key not found. Set VENICE_API_KEY environment variable.";
     }
 
     const { filePath, model = DEFAULT_MODEL } = args;

@@ -51,12 +51,12 @@ When multiple images in a directory need descriptions:
 3. Write descriptions to `.md` files alongside each image, or update the relevant content files
 
 ## Requirements
-- `OPENCODE_API_KEY` must be set as an environment variable, or placed in `~/.secrets/opencode-api-key`
+- `VENICE_API_KEY` must be set as an environment variable
 - If the key is not found, the tool returns an error message — inform the user to set it
 
 ## Configuration
 - Default model is defined in `utils/vision-api.ts` as `DEFAULT_MODEL`
-- API URL defaults to `https://api.venice.ai/api/v1/chat/completions` but can be overridden via `OPENCODE_API_URL` environment variable
+- API URL defaults to `https://api.venice.ai/api/v1/chat/completions` but can be overridden via `VENICE_API_URL` environment variable
 - Shared configuration between `image-describe` and `image-transcribe` lives in `utils/vision-api.ts`
 
 ## Tips

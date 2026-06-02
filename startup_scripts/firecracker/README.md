@@ -118,8 +118,8 @@ sudo usermod -aG kvm $USER
 │   └── debian-trixie.id_rsa.pub  # SSH public key
 ├── config/
 │   └── opencode-config.json       # OpenCode configuration template
-├── secrets/                        # API keys (DO NOT COMMIT)
-│   └── opencode-api-key           # API key for OpenCode provider
+├── .env                            # Environment variables / secrets (DO NOT COMMIT)
+├── .env.example                    # Environment variable template
 ├── release-v1.15.1-x86_64/
 │   ├── firecracker-v1.15.1-x86_64
 │   ├── jailer-v1.15.1-x86_64
@@ -172,7 +172,7 @@ This will:
 - Install SSH, Python 3, Node.js, OpenCode, and common utilities
 - Create SSH keys for root login
 - Configure OpenCode with `config/opencode-config.json`
-- Install the API key from `secrets/opencode-api-key`
+- Inject environment variables from `.env` (API keys, git config, etc.)
 - Generate the ext4 base image at `base/rootfs.ext4`
 
 **Note:** This step requires internet access and takes several minutes.
@@ -390,24 +390,19 @@ HOST_SERVICE_PORTS="8001 3000"
 them. If a service only listens on localhost, it will be unreachable from the
 VM even if the port is allowed.
 
-### OpenCode Configuration
+### OpenCode & VM Configuration
 
-The base image includes OpenCode with a pre-configured config at
-`~/.config/opencode/config.json`. To customize it before building:
+All environment variables are managed through a single `.env` file (copy from
+`.env.example`). These are injected into the VM at build time via a profile
+script at `/etc/profile.d/99-vm-env.sh`, making them available to all processes.
 
-1. Edit `config/opencode-config.json` with your preferred model and provider
-2. Put your API key in `secrets/opencode-api-key` (plain text, no trailing newline)
+To configure before building:
+
+1. Copy `.env.example` to `.env` and fill in your values
+2. Edit `config/opencode/config.json` with your preferred model and provider
 3. Rebuild the base image: `sudo ./init_base.sh`
 
-The config references `~/.secrets/opencode-api-key` for the API key. If the key file
-is missing during build, you can manually create it inside a running VM:
-
-```bash
-echo -n "your-api-key" > ~/.secrets/opencode-api-key
-```
-
-**Note:** The `secrets/` directory should be in `.gitignore` to prevent
-accidentally committing API keys.
+**Note:** The `.env` file is gitignored to prevent accidentally committing secrets.
 
 ## Security Considerations
 
@@ -544,8 +539,8 @@ Builds the base rootfs image from scratch:
 - Installs system packages and utilities
 - Configures SSH, networking, and overlay-init
 - Installs Node.js, OpenCode, Python, and uv
-- Configures OpenCode with `config/opencode-config.json`
-- Installs API key from `secrets/opencode-api-key`
+- Configures OpenCode with `config/opencode/config.json`
+- Injects environment variables from `.env` into the VM
 - Generates ext4 image
 
 **Requires:** sudo, debootstrap, internet access

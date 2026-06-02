@@ -1,5 +1,5 @@
 import { tool } from "@opencode-ai/plugin";
-import { OPENCODE_API_URL, DEFAULT_MODEL, getApiKey, imageToBase64, resolveFilePath, isVeniceUrl } from "../utils/vision-api.ts";
+import { VENICE_API_URL, DEFAULT_MODEL, getApiKey, imageToBase64, resolveFilePath, isVeniceUrl } from "../utils/vision-api.ts";
 
 const LENGTH_CONFIG = {
   short: { maxTokens: 100, prompt: "in one concise sentence suitable for alt text" },
@@ -17,7 +17,7 @@ async function generateDescription(base64Image, apiKey, model, length, style) {
   const config = LENGTH_CONFIG[length];
   const stylePrompt = STYLE_PROMPTS[style];
 
-  const response = await fetch(OPENCODE_API_URL, {
+  const response = await fetch(VENICE_API_URL, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -58,7 +58,7 @@ async function generateDescription(base64Image, apiKey, model, length, style) {
 
 export default tool({
   description:
-    "Generate a text description of an image using OpenCode AI vision. Supports configurable length (short/medium/detailed) and style (alt-text/artistic/technical). Requires OPENCODE_API_KEY environment variable.",
+    "Generate a text description of an image using a vision LLM. Supports configurable length (short/medium/detailed) and style (alt-text/artistic/technical). Requires VENICE_API_KEY environment variable.",
   args: {
     filePath: tool.schema.string().describe("Absolute path to the image file to describe"),
     model: tool.schema.string().optional().describe(`OpenCode AI model to use (default: ${DEFAULT_MODEL})`),
@@ -68,7 +68,7 @@ export default tool({
   async execute(args, context) {
     const apiKey = getApiKey();
     if (!apiKey) {
-      return "Error: OpenCode API key not found. Set OPENCODE_API_KEY env var or place key in ~/.secrets/opencode-api-key.";
+      return "Error: Venice API key not found. Set VENICE_API_KEY environment variable.";
     }
 
     const { filePath, model = DEFAULT_MODEL, length = "short", style = "alt-text" } = args;

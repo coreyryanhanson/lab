@@ -3,6 +3,7 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/config.sh"
+source "${SCRIPT_DIR}/.env"
 
 ARCH="$(uname -m)"
 ROOTFS_DIR="${SCRIPT_DIR}/base/debian-trixie-rootfs"
@@ -394,9 +395,7 @@ sudo chmod 600 "$ROOTFS_DIR/root/.ssh/authorized_keys"
 # ============================================================
 echo "Setting up OpenCode config..."
 
-# Create directories
-    sudo mkdir -p "$ROOTFS_DIR/root/.config/opencode"
-sudo mkdir -p "$ROOTFS_DIR/root/.secrets"
+sudo mkdir -p "$ROOTFS_DIR/root/.config/opencode"
 
 # Copy config template if it exists
 if [ -f "${SCRIPT_DIR}/config/opencode/config.json" ]; then
@@ -408,22 +407,25 @@ else
     echo "  OpenCode will use default settings"
 fi
 
-# Copy API key if it exists
-if [ -f "${SCRIPT_DIR}/secrets/opencode-api-key" ]; then
-    API_KEY=$(cat "${SCRIPT_DIR}/secrets/opencode-api-key" | tr -d '[:space:]')
-    echo -n "$API_KEY" | sudo tee "$ROOTFS_DIR/root/.secrets/opencode-api-key" > /dev/null
-    sudo chmod 600 "$ROOTFS_DIR/root/.secrets/opencode-api-key"
-    sudo chown root:root "$ROOTFS_DIR/root/.secrets/opencode-api-key"
-    echo "  API key installed"
-else
-    echo "  WARNING: No secrets/opencode-api-key found"
-    echo "  You will need to set the API key manually after booting"
-    echo "  Create: /root/.secrets/opencode-api-key"
-fi
-
-# Secure the directories
-sudo chmod 700 "$ROOTFS_DIR/root/.secrets"
 sudo chmod 700 "$ROOTFS_DIR/root/.config"
+
+# ============================================================
+# Inject environment variables into VM
+# ============================================================
+echo "Injecting environment variables into VM..."
+
+# Write all non-comment lines from .env as exports into a profile script
+sed -n '/^[A-Z_]/s/^/export /p' "${SCRIPT_DIR}/.env" | \
+    sudo tee "$ROOTFS_DIR/etc/profile.d/99-vm-env.sh" > /dev/null
+sudo chmod 644 "$ROOTFS_DIR/etc/profile.d/99-vm-env.sh"
+echo "  Environment variables written to /etc/profile.d/99-vm-env.sh"
+
+# Configure git inside the VM
+sudo chroot "$ROOTFS_DIR" /bin/bash -c '
+    git config --global user.name "'"${GIT_NAME}"'"
+    git config --global user.email "'"${GIT_EMAIL}"'"
+    echo "  Git configured: '"${GIT_NAME}"' <'"${GIT_EMAIL}"'>"
+'
 
 # ============================================================
 # Create ext4 image

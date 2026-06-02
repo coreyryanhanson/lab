@@ -1,19 +1,15 @@
 import fs from "fs";
 import path from "path";
-import os from "os";
 
 export const DEFAULT_MODEL = "qwen3-6-27b";
-export const OPENCODE_API_URL = process.env.OPENCODE_API_URL || "https://api.venice.ai/api/v1/chat/completions";
+export const VENICE_API_URL = process.env.VENICE_API_URL || "https://api.venice.ai/api/v1/chat/completions";
 
 export function isVeniceUrl(): boolean {
-  return OPENCODE_API_URL.includes("venice.ai");
+  return VENICE_API_URL.includes("venice.ai");
 }
 
 export function getApiKey(): string | null {
-  if (process.env.OPENCODE_API_KEY) return process.env.OPENCODE_API_KEY;
-  const keyFile = path.join(os.homedir(), ".secrets", "opencode-api-key");
-  if (fs.existsSync(keyFile)) return fs.readFileSync(keyFile, "utf-8").trim();
-  return null;
+  return process.env.VENICE_API_KEY || null;
 }
 
 export function imageToBase64(filePath: string): string {

@@ -30,5 +30,5 @@ image-transcribe({ filePath: "src/assets/scans/letter.jpg", model: "qwen3-6-27b"
 ```
 ## Requirements
 
-- API key is read from `~/.secrets/opencode-api-key` or `OPENCODE_API_KEY` env var (same as `image-describe`)
+- `VENICE_API_KEY` must be set as an environment variable (same as `image-describe`)
 - Auto-discovered from `.opencode/tools/` — no registration needed
