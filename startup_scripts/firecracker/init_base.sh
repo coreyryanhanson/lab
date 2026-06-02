@@ -427,6 +427,8 @@ echo "  OpenCode config, tools, utils, and skills installed"
 echo "Installing Pi Coding Agent..."
 
 sudo chroot "$ROOTFS_DIR" /bin/bash -c '
+    export NVM_DIR="/root/.nvm"
+    [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
     npm install -g --ignore-scripts @earendil-works/pi-coding-agent
     echo "  Pi agent installed: $(pi --version 2>/dev/null || true)"
 '
