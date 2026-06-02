@@ -454,6 +454,18 @@ sudo rm -rf "$ROOTFS_DIR/tmp/pi-config"
 echo "  Pi config, auth, models, and extensions installed"
 
 # ============================================================
+# Pre-download pi agent tool binaries (fd, rg) by running pi once
+# ============================================================
+echo "Pre-downloading pi agent tool binaries..."
+
+sudo chroot "$ROOTFS_DIR" /bin/bash -c '
+    export NVM_DIR="/root/.nvm"
+    [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+    script -q -c "pi" /dev/null <<< "/quit"
+    echo "  pi tool binaries installed"
+'
+
+# ============================================================
 # Inject environment variables into VM
 # ============================================================
 echo "Injecting environment variables into VM..."
