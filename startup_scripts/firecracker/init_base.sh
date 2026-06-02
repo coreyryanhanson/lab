@@ -59,6 +59,7 @@ sudo chroot "$ROOTFS_DIR" /bin/bash -c '
 
     # Set hostname
     echo "firecracker" > /etc/hostname
+    echo "127.0.1.1 firecracker" >> /etc/hosts
 
     # Configure serial console
     systemctl enable serial-getty@ttyS0.service 2>/dev/null || true
