@@ -395,16 +395,16 @@ sudo chmod 600 "$ROOTFS_DIR/root/.ssh/authorized_keys"
 echo "Setting up OpenCode config..."
 
 # Create directories
-sudo mkdir -p "$ROOTFS_DIR/root/.config/opencode"
+    sudo mkdir -p "$ROOTFS_DIR/root/.config/opencode"
 sudo mkdir -p "$ROOTFS_DIR/root/.secrets"
 
 # Copy config template if it exists
-if [ -f "${SCRIPT_DIR}/config/opencode-config.json" ]; then
-    sudo cp "${SCRIPT_DIR}/config/opencode-config.json" \
+if [ -f "${SCRIPT_DIR}/config/opencode/config.json" ]; then
+    sudo cp "${SCRIPT_DIR}/config/opencode/config.json" \
             "$ROOTFS_DIR/root/.config/opencode/config.json"
     echo "  Config installed from local template"
 else
-    echo "  WARNING: No config/opencode-config.json found"
+    echo "  WARNING: No config/opencode/config.json found"
     echo "  OpenCode will use default settings"
 fi
 
