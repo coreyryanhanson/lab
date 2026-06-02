@@ -11,7 +11,7 @@ echo ""
 
 # 1. Create directories
 echo "[1/4] Creating directories..."
-mkdir -p "$DEST/tools" "$DEST/skills"
+mkdir -p "$DEST/tools" "$DEST/utils" "$DEST/skills"
 
 # 2. Copy utils
 echo "[2/4] Copying utils..."
