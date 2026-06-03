@@ -5,6 +5,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/config.sh"
 source "${SCRIPT_DIR}/.env"
 
+# Substitute SearXNG host/port from .env into systemd service template
+sed -i "s/SEARXNG_HOST_PLACEHOLDER/${SEARXNG_HOST}/g" "${SCRIPT_DIR}/config/searxng/searxng.service"
+sed -i "s/SEARXNG_PORT_PLACEHOLDER/${SEARXNG_PORT}/g"  "${SCRIPT_DIR}/config/searxng/searxng.service"
+
 ARCH="$(uname -m)"
 ROOTFS_DIR="${SCRIPT_DIR}/base/debian-trixie-rootfs"
 ROOTFS_IMG="${SCRIPT_DIR}/base/rootfs.ext4"

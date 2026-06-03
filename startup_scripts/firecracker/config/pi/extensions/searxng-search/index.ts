@@ -16,7 +16,8 @@ interface SearXNGResponse {
   suggestions: string[];
 }
 
-const DEFAULT_SEARXNG_URL = process.env.SEARXNG_URL || "http://127.0.0.1:8888";
+const DEFAULT_SEARXNG_URL = process.env.SEARXNG_URL ||
+    `http://${process.env.SEARXNG_HOST || "127.0.0.1"}:${process.env.SEARXNG_PORT || "8888"}`;
 
 // Module-level reachability state (updated on session start and manual checks)
 let searxngServerWasReachable: boolean | null = null;

@@ -8,10 +8,12 @@ User=searxng
 Group=searxng
 WorkingDirectory=/usr/local/searxng/searxng-src
 Environment=SEARXNG_SETTINGS_PATH=/etc/searxng/settings.yml
+Environment=SEARXNG_HOST=SEARXNG_HOST_PLACEHOLDER
+Environment=SEARXNG_PORT=SEARXNG_PORT_PLACEHOLDER
 ExecStart=/usr/local/searxng/searx-pyenv/bin/granian \
     --interface wsgi \
-    --host 127.0.0.1 \
-    --port 8888 \
+    --host ${SEARXNG_HOST} \
+    --port ${SEARXNG_PORT} \
     --workers 2 \
     --runtime-threads 2 \
     --log-level warning \
