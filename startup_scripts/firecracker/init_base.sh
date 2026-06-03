@@ -14,6 +14,17 @@ ROOTFS_DIR="${SCRIPT_DIR}/base/debian-trixie-rootfs"
 ROOTFS_IMG="${SCRIPT_DIR}/base/rootfs.ext4"
 KERNEL_DEST="${SCRIPT_DIR}/images/vmlinux-6.1.155"
 
+# Cleanup trap: unmount virtual filesystems on script exit or error
+# Placed here so ROOTFS_DIR is already defined (avoid unmounting host /proc)
+cleanup_mounts() {
+    local rc=$?
+    if [ -n "${ROOTFS_DIR}" ]; then
+        sudo umount "${ROOTFS_DIR}/proc" "${ROOTFS_DIR}/sys" "${ROOTFS_DIR}/dev" 2>/dev/null || true
+    fi
+    exit $rc
+}
+trap cleanup_mounts EXIT
+
 echo "========================================"
 echo "Building Firecracker Base Image"
 echo "========================================"
@@ -494,6 +505,12 @@ sudo chroot "$ROOTFS_DIR" /bin/bash -c '
     npm install -g playwright
     npx playwright install --with-deps chromium
     ln -sf "$(which playwright)" /usr/local/bin/playwright
+
+    # Install pi-browser extension deps (turndown + node-html-parser only; playwright is globally installed)
+    EXT_DIR="$HOME/.pi/agent/extensions/pi-browser"
+    if [ -f "$EXT_DIR/package.json" ]; then
+        npm install --prefix "$EXT_DIR" --ignore-scripts 2>/dev/null || true
+    fi
 '
 
 echo "  Playwright + Chromium installed"

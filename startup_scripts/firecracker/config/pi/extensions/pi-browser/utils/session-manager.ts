@@ -1,0 +1,143 @@
+/**
+ * Session manager — tracks browser session lifecycle per task_id.
+ *
+ * Design: one shared Browser instance (for Level 2/3), one BrowserContext
+ * per active taskId. Contexts are created on first use and disposed on
+ * task completion or error.
+ */
+
+import type { Browser, BrowserContext } from "playwright";
+
+/** Which backend level a session is currently using */
+export type BackendLevel = "fetch" | "chromium" | "stealth";
+
+/** Runtime state of a single browsing session */
+export interface BrowserSession {
+  taskId: string;
+  level: BackendLevel;
+  /** The URL currently loaded in this session */
+  currentUrl?: string;
+  /** Page title if available */
+  currentTitle?: string;
+  /** Timestamp of last activity */
+  lastActive: number;
+  /** Whether the session has crashed and needs recovery */
+  crashed: boolean;
+  /** Level 2/3: Playwright browser context (undefined for fetch) */
+  context?: BrowserContext;
+  /** Level 3: Python bridge process handle (opaque) */
+  processHandle?: unknown;
+}
+
+class SessionManager {
+  #sessions = new Map<string, BrowserSession>();
+  #playwrightBrowser: Browser | null = null;
+  #stealthProcess: unknown = null;
+
+  createSession(taskId: string, level: BackendLevel): BrowserSession {
+    const existing = this.#sessions.get(taskId);
+    if (existing) {
+      existing.level = level;
+      existing.currentUrl = undefined;
+      existing.currentTitle = undefined;
+      existing.lastActive = Date.now();
+      existing.crashed = false;
+      return existing;
+    }
+    const session: BrowserSession = {
+      taskId,
+      level,
+      lastActive: Date.now(),
+      crashed: false,
+    };
+    this.#sessions.set(taskId, session);
+    return session;
+  }
+
+  getSession(taskId: string): BrowserSession | undefined {
+    return this.#sessions.get(taskId);
+  }
+
+  updateSession(
+    taskId: string,
+    updates: Partial<Pick<BrowserSession, "currentUrl" | "currentTitle" | "level" | "crashed">>,
+  ): void {
+    const session = this.#sessions.get(taskId);
+    if (session) {
+      if (updates.currentUrl !== undefined) session.currentUrl = updates.currentUrl;
+      if (updates.currentTitle !== undefined) session.currentTitle = updates.currentTitle;
+      if (updates.level !== undefined) session.level = updates.level;
+      if (updates.crashed !== undefined) session.crashed = updates.crashed;
+      session.lastActive = Date.now();
+    }
+  }
+
+  removeSession(taskId: string): void {
+    const session = this.#sessions.get(taskId);
+    if (session?.context) {
+      session.context.close().catch(() => {});
+    }
+    this.#sessions.delete(taskId);
+  }
+
+  async removeAll(): Promise<void> {
+    const closePromises: Promise<void>[] = [];
+    for (const [, session] of this.#sessions) {
+      if (session.context) {
+        closePromises.push(session.context.close().catch(() => {}));
+      }
+    }
+    await Promise.all(closePromises);
+    this.#sessions.clear();
+    if (this.#playwrightBrowser) {
+      try { await this.#playwrightBrowser.close(); } catch { /* ok */ }
+      this.#playwrightBrowser = null;
+    }
+  }
+
+  getStatus(): string {
+    const active = this.getActiveSessions();
+    if (active.length === 0) {
+      for (const [, s] of this.#sessions) {
+        if (s.crashed) return `💥 ${s.level} crashed`;
+      }
+      return "🌐 idle";
+    }
+    if (active.length === 1) {
+      const s = active[0];
+      const domain = s.currentUrl ? extractDomain(s.currentUrl) : undefined;
+      const sym = levelToSymbol(s.level);
+      return domain ? `▶ ${sym}: ${domain}` : `▶ ${sym}`;
+    }
+    const levels = new Set(active.map((s) => s.level));
+    const levelStr = Array.from(levels).map(levelToSymbol).join(",");
+    return `🌐 ${active.length} active (${levelStr})`;
+  }
+
+  getActiveSessions(): BrowserSession[] {
+    return Array.from(this.#sessions.values()).filter((s) => s.currentUrl && !s.crashed);
+  }
+
+  get activeCount(): number {
+    return this.getActiveSessions().length;
+  }
+
+  getPlaywrightBrowser(): Browser | null { return this.#playwrightBrowser; }
+  setPlaywrightBrowser(b: Browser): void { this.#playwrightBrowser = b; }
+  getStealthProcess(): unknown { return this.#stealthProcess; }
+  setStealthProcess(p: unknown): void { this.#stealthProcess = p; }
+}
+
+function extractDomain(url: string): string {
+  try { return new URL(url).hostname; } catch { return url; }
+}
+
+function levelToSymbol(level: BackendLevel): string {
+  switch (level) {
+    case "fetch": return "HTML";
+    case "chromium": return "PW";
+    case "stealth": return "IPW";
+  }
+}
+
+export const sessionManager = new SessionManager();
