@@ -8,6 +8,7 @@
 import { chromium } from "playwright";
 import type { Browser, BrowserContext, Page } from "playwright";
 import { parseSnapshot, buildLocator, type AriaCachedNode } from "../utils/accessibility-tree";
+import { installDialogHandlers, formatDialogLog } from "../utils/cdp-supervisor";
 import { sessionManager } from "../utils/session-manager";
 
 // ─── Types ────────────────────────────────────────────────────────────
@@ -68,7 +69,21 @@ async function _getOrCreateContext(
 ): Promise<{ context: BrowserContext; page: Page; isNew: boolean }> {
   const existing = _contexts.get(taskId);
   if (existing) {
-    return { ...existing, isNew: false };
+    // Check if the page is still alive (not closed/crashed)
+    if (existing.page.isClosed()) {
+      // Page was closed — recreate it in the same context
+      try {
+        const newPage = await existing.context.newPage();
+        installDialogHandlers(taskId, newPage);
+        existing.page = newPage;
+      } catch {
+        // Context is also dead — remove and recreate
+        _contexts.delete(taskId);
+        _elementCache.delete(taskId);
+      }
+    } else {
+      return { ...existing, isNew: false };
+    }
   }
 
   // Lazy-init the shared browser
@@ -83,6 +98,17 @@ async function _getOrCreateContext(
       ],
     });
     sessionManager.setPlaywrightBrowser(_browser);
+
+    // Auto-recover from browser crash/disconnect
+    _browser.on("disconnected", () => {
+      _browser = null;
+      sessionManager.setPlaywrightBrowser(null);
+      // Clear all contexts since they're invalid now
+      for (const [tid] of _contexts) {
+        _elementCache.delete(tid);
+      }
+      _contexts.clear();
+    });
   }
 
   const context = await _browser.newContext({
@@ -94,6 +120,9 @@ async function _getOrCreateContext(
   const page = await context.newPage();
   _contexts.set(taskId, { context, page });
   _elementCache.set(taskId, new Map());
+
+  // Install dialog handlers (auto-dismiss JS alerts/confirms/prompts)
+  installDialogHandlers(taskId, page);
 
   // Update session manager with the context
   const session = sessionManager.getSession(taskId);
@@ -163,6 +192,12 @@ export async function navigate(
 
     const title = await page.title();
 
+    // Check for auto-dismissed dialogs
+    const dialogInfo = formatDialogLog(taskId);
+    const snapshotWithDialogs = dialogInfo
+      ? parsed.text + "\n\n--- Auto-dismissed dialogs ---\n" + dialogInfo
+      : parsed.text;
+
     // Update session manager
     sessionManager.updateSession(taskId, {
       currentUrl: page.url(),
@@ -174,7 +209,7 @@ export async function navigate(
       success: true,
       url: page.url(),
       title,
-      snapshot: parsed.text,
+      snapshot: snapshotWithDialogs,
       elementCount: parsed.count,
       backend: "chromium",
       botDetected,

@@ -25,7 +25,7 @@ const browserNavigateTool = defineTool({
   description:
     "Navigate a browser to a URL and return the page as an accessibility tree with @e1, @e2 element references. " +
     "Auto-selects the best backend: simple HTTP fetch for static sites, " +
-    "Playwright Chromium for JS-heavy pages, or stealth mode (future) for bot-protected sites.",
+    "Playwright Chromium for JS-heavy pages, or stealth Firefox for bot-protected sites.",
   promptSnippet:
     "Fetch and read web pages in text form",
   promptGuidelines: [
@@ -40,7 +40,7 @@ const browserNavigateTool = defineTool({
       StringEnum(["auto", "fetch", "chromium", "stealth"] as const, {
         description:
           'Backend strategy: "auto" (default) tries fetch first, escalates as needed; ' +
-          '"fetch" uses plain HTTP; "chromium" uses Playwright; "stealth" uses invisible_playwright (future)',
+          '"fetch" uses plain HTTP; "chromium" uses Playwright Chromium; "stealth" uses invisible Playwright Firefox (anti-detection)',
       }),
     ),
     timeout: Type.Optional(
@@ -496,18 +496,29 @@ const browserStatusCommand = {
   handler: async (_args: string, ctx: any) => {
     const status = sessionManager.getStatus();
     const active = sessionManager.getActiveSessions();
-    let msg = `Browser status: ${status}`;
+    let msg = `🌐 ${status}`;
+
+    // Backend availability
+    const pw = sessionManager.getPlaywrightBrowser();
+    const backends: string[] = ["fetch"];
+    if (pw?.isConnected()) backends.push("chromium");
+    else backends.push("chromium (offline)");
+    // Check stealth availability
+    try {
+      const { execSync } = require("child_process");
+      execSync("test -x /opt/ipw-pyenv/bin/python", { stdio: "pipe" });
+      backends.push("stealth");
+    } catch {
+      backends.push("stealth (offline)");
+    }
+    msg += `\nBackends: ${backends.join(", ")}`;
+
     if (active.length > 0) {
       msg += `\nActive sessions: ${active.length}`;
       for (const s of active) {
-        msg += `\n  • [${s.level}] ${s.currentUrl || "(pending)"}`;
+        const levelEmoji = s.level === "stealth" ? "🦊" : s.level === "chromium" ? "🔧" : "📡";
+        msg += `\n  ${levelEmoji} [${s.level}] ${s.currentUrl || "(pending)"}`;
         if (s.currentTitle) msg += ` — ${s.currentTitle}`;
-      }
-    } else {
-      // Check playright browser state
-      const pw = sessionManager.getPlaywrightBrowser();
-      if (pw) {
-        msg += `\n${pw.isConnected() ? "🟢" : "🔴"} Playwright browser available`;
       }
     }
     ctx.ui.notify(msg, "info");
@@ -534,13 +545,14 @@ export default function (pi: ExtensionAPI) {
 
   // --- Startup --------------------------------------------------
   pi.on("session_start", async (_event, ctx) => {
-    ctx.ui.notify("🌐 Browser extension loaded. Try: navigate to a URL or browse interactively.", "info");
+    ctx.ui.notify("🌐 Browser extension loaded (fetch → chromium → stealth). Try: navigate to a URL or browse interactively.", "info");
     updateFooterStatus(ctx);
   });
 
   // --- Cleanup --------------------------------------------------
   pi.on("session_shutdown", async (_event, ctx) => {
     await import("./backend/playwright-backend").then(m => m.cleanupAll()).catch(() => {});
+    await import("./backend/stealth-backend").then(m => m.cleanupAll()).catch(() => {});
     await sessionManager.removeAll();
     try {
       ctx?.ui?.setStatus?.("browser", "");

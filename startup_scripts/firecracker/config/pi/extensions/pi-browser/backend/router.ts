@@ -1,13 +1,16 @@
 /**
  * Backend Router — auto-escalation logic and backend dispatch.
  *
- * Dispatches to Level 1 (fetch) or Level 2 (Playwright Chromium) based
- * on strategy and auto-detection. Level 3 (stealth) will be added in Phase 3.
+ * Dispatches to Level 1 (fetch), Level 2 (Playwright Chromium), or
+ * Level 3 (Invisible Playwright stealth Firefox) based on strategy
+ * and auto-detection.
  */
 
 import * as fetchBackend from "./fetch-backend";
 import * as playwrightBackend from "./playwright-backend";
+import * as stealthBackend from "./stealth-backend";
 import { sessionManager, type BackendLevel } from "../utils/session-manager";
+import { validateUrl } from "../utils/url-safety";
 
 // ─── Types ────────────────────────────────────────────────────────────
 
@@ -72,6 +75,15 @@ export async function navigate(
     };
   }
 
+  // --- URL Safety Check ---
+  const safety = validateUrl(normalizedUrl);
+  if (!safety.safe) {
+    return {
+      success: false, url: normalizedUrl, title: "", content: safety.reason || "URL blocked",
+      backendUsed: "fetch", error: `URL blocked: ${safety.reason}`,
+    };
+  }
+
   // --- Level 1: HTTP Fetch ---
   if (strategy === "fetch" || strategy === "auto") {
     sessionManager.createSession(taskId, "fetch");
@@ -132,8 +144,25 @@ export async function navigate(
       session.currentUrl = result.url;
       session.currentTitle = result.title;
 
-      const botWarn = result.botDetected && strategy === "auto";
+      // Bot detected on successful load — try stealth escalation
+      if (result.botDetected && strategy === "auto") {
+        session.updateSession(taskId, { level: "stealth" });
+        const stealthResult = await stealthBackend.navigate(result.url, taskId, timeoutMs);
+        if (stealthResult.success) {
+          return {
+            success: true,
+            url: stealthResult.url,
+            title: stealthResult.title,
+            content: stealthResult.snapshot,
+            elementCount: stealthResult.elementCount,
+            backendUsed: "stealth",
+            botDetectionWarning: true,
+          };
+        }
+        // Stealth failed — fall through to return chromium result with warning
+      }
 
+      const botWarn = result.botDetected && strategy === "auto";
       return {
         success: true, url: result.url, title: result.title,
         content: result.snapshot,
@@ -143,10 +172,22 @@ export async function navigate(
       };
     }
 
-    // Playwright failed
+    // Playwright failed — escalate to Level 3 (stealth) if auto
     if (result.botDetected && strategy === "auto") {
-      // Would escalate to Level 3 here (Phase 3)
       session.updateSession(taskId, { level: "stealth" });
+      const stealthResult = await stealthBackend.navigate(result.url, taskId, timeoutMs);
+      if (stealthResult.success) {
+        return {
+          success: true,
+          url: stealthResult.url,
+          title: stealthResult.title,
+          content: stealthResult.snapshot,
+          elementCount: stealthResult.elementCount,
+          backendUsed: "stealth",
+          botDetectionWarning: true,
+        };
+      }
+      // Stealth also failed — report original error
       return {
         success: false, url: result.url, title: "",
         content: result.error || "Unknown error",
@@ -167,12 +208,33 @@ export async function navigate(
     };
   }
 
-  // --- Level 3: Stealth (Phase 3) ---
+  // --- Level 3: Invisible Playwright Stealth ---
   if (strategy === "stealth") {
+    sessionManager.createSession(taskId, "stealth");
+    const session = sessionManager.getSession(taskId)!;
+    session.currentUrl = normalizedUrl;
+
+    const result = await stealthBackend.navigate(normalizedUrl, taskId, timeoutMs);
+
+    if (result.success) {
+      session.currentUrl = result.url;
+      session.currentTitle = result.title;
+      return {
+        success: true,
+        url: result.url,
+        title: result.title,
+        content: result.snapshot,
+        elementCount: result.elementCount,
+        backendUsed: "stealth",
+      };
+    }
+
+    await stealthBackend.cleanup(taskId).catch(() => {});
+    sessionManager.removeSession(taskId);
     return {
-      success: false, url: normalizedUrl, title: "", content: "",
+      success: false, url: result.url, title: "", content: result.error || "Unknown error",
       backendUsed: "stealth",
-      error: "Stealth backend not yet implemented (planned for Phase 3)",
+      error: result.error,
     };
   }
 
@@ -197,11 +259,11 @@ export async function snapshot(taskId?: string): Promise<SnapshotResult> {
     return playwrightBackend.snapshot(tid);
   }
 
-  if (session.level === "fetch") {
-    return { success: false, snapshot: "", elementCount: 0, error: "Snapshot requires an interactive browser (Level 2+). Use strategy='chromium' when navigating." };
+  if (session.level === "stealth") {
+    return stealthBackend.snapshot(tid);
   }
 
-  return { success: false, snapshot: "", elementCount: 0, error: `Backend ${session.level} doesn't support snapshots` };
+  return { success: false, snapshot: "", elementCount: 0, error: `Snapshot requires an interactive browser (Level 2+). Session is on ${session.level}.` };
 }
 
 // ─── Click ────────────────────────────────────────────────────────────
@@ -210,8 +272,9 @@ export async function click(taskId: string | undefined, ref: string): Promise<In
   const tid = taskId ?? "default";
   const session = sessionManager.getSession(tid);
   if (!session) return { success: false, error: "No active session" };
-  if (session.level !== "chromium") return { success: false, error: "Click requires an interactive browser (Level 2+)" };
-  return playwrightBackend.click(tid, ref);
+  if (session.level === "chromium") return playwrightBackend.click(tid, ref);
+  if (session.level === "stealth") return stealthBackend.click(tid, ref);
+  return { success: false, error: `Click requires an interactive browser. Session is on ${session.level}.` };
 }
 
 // ─── Type ─────────────────────────────────────────────────────────────
@@ -220,8 +283,9 @@ export async function type(taskId: string | undefined, ref: string, text: string
   const tid = taskId ?? "default";
   const session = sessionManager.getSession(tid);
   if (!session) return { success: false, error: "No active session" };
-  if (session.level !== "chromium") return { success: false, error: "Type requires an interactive browser (Level 2+)" };
-  return playwrightBackend.type(tid, ref, text);
+  if (session.level === "chromium") return playwrightBackend.type(tid, ref, text);
+  if (session.level === "stealth") return stealthBackend.type(tid, ref, text);
+  return { success: false, error: `Type requires an interactive browser. Session is on ${session.level}.` };
 }
 
 // ─── Scroll ───────────────────────────────────────────────────────────
@@ -230,8 +294,9 @@ export async function scroll(taskId: string | undefined, direction: "up" | "down
   const tid = taskId ?? "default";
   const session = sessionManager.getSession(tid);
   if (!session) return { success: false, error: "No active session" };
-  if (session.level !== "chromium") return { success: false, error: "Scroll requires an interactive browser (Level 2+)" };
-  return playwrightBackend.scroll(tid, direction);
+  if (session.level === "chromium") return playwrightBackend.scroll(tid, direction);
+  if (session.level === "stealth") return stealthBackend.scroll(tid, direction);
+  return { success: false, error: `Scroll requires an interactive browser. Session is on ${session.level}.` };
 }
 
 // ─── Screenshot ───────────────────────────────────────────────────────
@@ -240,8 +305,9 @@ export async function screenshot(taskId?: string): Promise<ScreenshotResult> {
   const tid = taskId ?? "default";
   const session = sessionManager.getSession(tid);
   if (!session) return { success: false, dataUri: "", error: "No active session" };
-  if (session.level !== "chromium") return { success: false, dataUri: "", error: "Screenshot requires an interactive browser (Level 2+)" };
-  return playwrightBackend.screenshot(tid);
+  if (session.level === "chromium") return playwrightBackend.screenshot(tid);
+  if (session.level === "stealth") return stealthBackend.screenshot(tid);
+  return { success: false, dataUri: "", error: `Screenshot requires an interactive browser. Session is on ${session.level}.` };
 }
 
 // ─── Go Back ──────────────────────────────────────────────────────────
@@ -250,8 +316,9 @@ export async function goBack(taskId?: string): Promise<InteractionResult> {
   const tid = taskId ?? "default";
   const session = sessionManager.getSession(tid);
   if (!session) return { success: false, error: "No active session" };
-  if (session.level !== "chromium") return { success: false, error: "Back navigation requires an interactive browser (Level 2+)" };
-  return playwrightBackend.goBack(tid);
+  if (session.level === "chromium") return playwrightBackend.goBack(tid);
+  if (session.level === "stealth") return stealthBackend.goBack(tid);
+  return { success: false, error: `Back navigation requires an interactive browser. Session is on ${session.level}.` };
 }
 
 // ─── Press Key ────────────────────────────────────────────────────────
@@ -260,8 +327,9 @@ export async function press(taskId: string | undefined, key: string): Promise<In
   const tid = taskId ?? "default";
   const session = sessionManager.getSession(tid);
   if (!session) return { success: false, error: "No active session" };
-  if (session.level !== "chromium") return { success: false, error: "Key press requires an interactive browser (Level 2+)" };
-  return playwrightBackend.press(tid, key);
+  if (session.level === "chromium") return playwrightBackend.press(tid, key);
+  if (session.level === "stealth") return stealthBackend.press(tid, key);
+  return { success: false, error: `Key press requires an interactive browser. Session is on ${session.level}.` };
 }
 
 // ─── Console & Eval ──────────────────────────────────────────────────
@@ -270,6 +338,7 @@ export async function evaluate(taskId: string | undefined, expression: string): 
   const tid = taskId ?? "default";
   const session = sessionManager.getSession(tid);
   if (!session) return { success: false, error: "No active session" };
-  if (session.level !== "chromium") return { success: false, error: "JS evaluation requires an interactive browser (Level 2+)" };
-  return playwrightBackend.evaluate(tid, expression);
+  if (session.level === "chromium") return playwrightBackend.evaluate(tid, expression);
+  if (session.level === "stealth") return stealthBackend.evaluate(tid, expression);
+  return { success: false, error: `JS evaluation requires an interactive browser. Session is on ${session.level}.` };
 }
