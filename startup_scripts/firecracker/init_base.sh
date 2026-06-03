@@ -111,31 +111,10 @@ sudo chroot "$ROOTFS_DIR" /bin/bash -c '
 # ============================================================
 echo "Installing nvm, Node.js, and OpenCode..."
 
-sudo chroot "$ROOTFS_DIR" /bin/bash -c '
-    # Install nvm
-    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
-
-    # Install latest LTS Node.js
-    export NVM_DIR="/root/.nvm"
-    [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
-    nvm install --lts
-
-    # Explicitly set default alias (critical for non-interactive shells)
-    nvm alias default "$(nvm current)"
-
-    # Install OpenCode globally
-    npm install -g opencode-ai@latest
-
-    # Add nvm to profile for all users
-    cat >> /etc/profile.d/nvm.sh << "NVMEOF"
-export NVM_DIR="/root/.nvm"
-[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
-
-# Make nvm global packages discoverable (even in non-interactive scripts)
-# Derived from the active node's location — no hardcoded paths
-[ -x "$(command -v node)" ] && export NODE_PATH="$(dirname "$(dirname "$(command -v node)")")/lib/node_modules"
-NVMEOF
-'
+# Copy and run the nvm/Node.js install script inside the chroot
+sudo cp "${SCRIPT_DIR}/config/chroot-scripts/install-nvm-node.sh" "${ROOTFS_DIR}/tmp/"
+sudo chroot "$ROOTFS_DIR" /bin/bash /tmp/install-nvm-node.sh
+sudo rm -f "${ROOTFS_DIR}/tmp/install-nvm-node.sh"
 
 # ============================================================
 # Add overlay-init script
