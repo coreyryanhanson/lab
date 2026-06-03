@@ -130,6 +130,10 @@ sudo chroot "$ROOTFS_DIR" /bin/bash -c '
     cat >> /etc/profile.d/nvm.sh << "NVMEOF"
 export NVM_DIR="/root/.nvm"
 [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+
+# Make nvm global packages discoverable (even in non-interactive scripts)
+# Derived from the active node's location — no hardcoded paths
+[ -x "$(command -v node)" ] && export NODE_PATH="$(dirname "$(dirname "$(command -v node)")")/lib/node_modules"
 NVMEOF
 '
 
@@ -418,6 +422,8 @@ sudo chroot "$ROOTFS_DIR" /bin/bash -c '
 
 # Install npm dependencies for tools (e.g. @opencode-ai/plugin)
 sudo chroot "$ROOTFS_DIR" /bin/bash -c '
+    export NVM_DIR="/root/.nvm"
+    [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
     cd /root/.config/opencode && [ -f package.json ] && npm install 2>/dev/null || true
 '
 
