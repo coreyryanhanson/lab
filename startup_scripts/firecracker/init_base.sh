@@ -495,6 +495,72 @@ sudo chroot "$ROOTFS_DIR" /bin/bash -c '
 echo "  SearXNG installed (listening on http://127.0.0.1:8888)"
 
 # ============================================================
+# Playwright + Invisible Playwright
+# ============================================================
+echo "Installing Playwright + Invisible Playwright..."
+
+sudo chroot "$ROOTFS_DIR" /bin/bash -c '
+    # Install Xvfb — needed by invisible_playwright headless mode
+    apt-get install -y xvfb
+
+    # Node.js Playwright (Chromium only)
+    export NVM_DIR="/root/.nvm"
+    [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+    npm install -g playwright
+    npx playwright install --with-deps chromium
+    ln -sf "$(which playwright)" /usr/local/bin/playwright
+'
+
+echo "  Playwright + Chromium installed"
+
+sudo chroot "$ROOTFS_DIR" /bin/bash -c '
+    # Python invisible_playwright (patched Firefox for stealth)
+    uv venv /opt/ipw-pyenv
+
+    git clone --depth 1 https://github.com/feder-cr/invisible_playwright.git \
+        /opt/invisible_playwright_src
+
+    VIRTUAL_ENV=/opt/ipw-pyenv \
+    /usr/local/bin/uv pip install -e /opt/invisible_playwright_src
+
+    # Fetch the ~100 MB patched Firefox binary (SHA256-verified)
+    VIRTUAL_ENV=/opt/ipw-pyenv \
+    /opt/ipw-pyenv/bin/python -m invisible_playwright fetch
+
+    # CLI symlink for discoverability
+    ln -sf /opt/ipw-pyenv/bin/invisible_playwright /usr/local/bin/invisible_playwright
+'
+
+echo "  Invisible Playwright installed"
+
+echo "Verifying browser installations..."
+
+sudo chroot "$ROOTFS_DIR" /bin/bash -c '
+    export NVM_DIR="/root/.nvm"
+    [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+
+    # Playwright + Chromium headless smoke test
+    node -e "
+        const { chromium } = require(\"playwright\");
+        (async () => {
+            const browser = await chromium.launch({ headless: true, args: [\"--no-sandbox\"] });
+            const page = await browser.newPage();
+            await page.goto(\"about:blank\");
+            await browser.close();
+            console.log(\"  Playwright+Chromium: OK\");
+        })();
+    "
+
+    # invisible_playwright import + binary check
+    VIRTUAL_ENV=/opt/ipw-pyenv \
+    python -c "
+        from invisible_playwright import InvisiblePlaywright, ensure_binary;
+        bin_path = ensure_binary();
+        print(f\"  InvisiblePlaywright: OK (binary at {bin_path})\");
+    "
+'
+
+# ============================================================
 # Inject environment variables into VM
 # ============================================================
 echo "Injecting environment variables into VM..."
