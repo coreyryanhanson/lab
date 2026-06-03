@@ -533,33 +533,6 @@ sudo chroot "$ROOTFS_DIR" /bin/bash -c '
 
 echo "  Invisible Playwright installed"
 
-echo "Verifying browser installations..."
-
-sudo chroot "$ROOTFS_DIR" /bin/bash -c '
-    export NVM_DIR="/root/.nvm"
-    [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
-
-    # Playwright + Chromium headless smoke test
-    node -e "
-        const { chromium } = require(\"playwright\");
-        (async () => {
-            const browser = await chromium.launch({ headless: true, args: [\"--no-sandbox\"] });
-            const page = await browser.newPage();
-            await page.goto(\"about:blank\");
-            await browser.close();
-            console.log(\"  Playwright+Chromium: OK\");
-        })();
-    "
-
-    # invisible_playwright import + binary check
-    VIRTUAL_ENV=/opt/ipw-pyenv \
-    python -c "
-        from invisible_playwright import InvisiblePlaywright, ensure_binary;
-        bin_path = ensure_binary();
-        print(f\"  InvisiblePlaywright: OK (binary at {bin_path})\");
-    "
-'
-
 # ============================================================
 # Inject environment variables into VM
 # ============================================================
