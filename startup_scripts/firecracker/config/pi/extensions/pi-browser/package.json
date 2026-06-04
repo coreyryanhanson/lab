@@ -5,6 +5,7 @@
   "description": "Web browsing plugin for pi with HTTP fetch, Playwright Chromium, and Invisible Playwright stealth backends",
   "dependencies": {
     "node-html-parser": "^6.1.0",
+    "playwright": "^1.60.0",
     "turndown": "^7.2.0"
   },
   "devDependencies": {

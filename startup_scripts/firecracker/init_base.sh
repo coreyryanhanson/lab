@@ -499,17 +499,17 @@ sudo chroot "$ROOTFS_DIR" /bin/bash -c '
     # Install Xvfb — needed by invisible_playwright headless mode
     apt-get install -y xvfb
 
-    # Node.js Playwright (Chromium only)
+    # Node.js Playwright (Chromium only) — installed as a local dep of the pi-browser extension
     export NVM_DIR="/root/.nvm"
     [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
-    npm install -g playwright
-    npx playwright install --with-deps chromium
-    ln -sf "$(which playwright)" /usr/local/bin/playwright
-
-    # Install pi-browser extension deps (turndown + node-html-parser only; playwright is globally installed)
     EXT_DIR="$HOME/.pi/agent/extensions/pi-browser"
     if [ -f "$EXT_DIR/package.json" ]; then
-        npm install --prefix "$EXT_DIR" --ignore-scripts 2>/dev/null || true
+        npm install --prefix "$EXT_DIR" 2>/dev/null || true
+    fi
+    # Install Chromium browser binary using the locally-installed playwright
+    if [ -f "$EXT_DIR/node_modules/.bin/playwright" ]; then
+        "$EXT_DIR/node_modules/.bin/playwright" install --with-deps chromium 2>/dev/null || true
+        ln -sf "$EXT_DIR/node_modules/.bin/playwright" /usr/local/bin/playwright
     fi
 '
 
