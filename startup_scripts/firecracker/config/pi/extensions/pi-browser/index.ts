@@ -228,10 +228,24 @@ const browserClickTool = defineTool({
       };
     }
 
-    const lines = [`Clicked ${ref}`, result.newUrl ? `URL: ${result.newUrl}` : "", result.newTitle ? `Title: ${result.newTitle}` : ""].filter(Boolean);
+    const lines = [
+      `Clicked ${ref}`,
+      result.newUrl ? `URL: ${result.newUrl}` : "",
+      result.newTitle ? `Title: ${result.newTitle}` : "",
+    ].filter(Boolean);
+
+    // Include auto-snapshot in the content so the model sees updated page state
+    let content = lines.join("\n");
+    if (result.snapshot) {
+      content += `\n\n${result.snapshot}`;
+    }
+    if (result.elementCount !== undefined) {
+      content += `\n\nInteractive elements: ${result.elementCount}`;
+    }
+
     return {
-      content: [{ type: "text", text: lines.join("\n") }],
-      details: { newUrl: result.newUrl, newTitle: result.newTitle },
+      content: [{ type: "text", text: content }],
+      details: { newUrl: result.newUrl, newTitle: result.newTitle, elementCount: result.elementCount },
     };
   },
 
@@ -243,8 +257,13 @@ const browserClickTool = defineTool({
     const d = result.details as Record<string, unknown> | undefined;
     if (d?.error) return new Text(theme.fg("error", `Click failed: ${d.error}`), 0, 0);
     const newUrl = d?.newUrl as string | undefined;
-    if (newUrl) return new Text(theme.fg("success", `✅ → ${newUrl}`), 0, 0);
-    return new Text(theme.fg("success", "✅ clicked"), 0, 0);
+    const ec = d?.elementCount as number | undefined;
+    if (newUrl) {
+      let text = theme.fg("success", `✅ → ${newUrl}`);
+      if (ec !== undefined) text += ` · ${ec} elements`;
+      return new Text(text, 0, 0);
+    }
+    return new Text(theme.fg("success", `✅ clicked${ec !== undefined ? ` · ${ec} elements` : ""}`), 0, 0);
   },
 });
 
@@ -275,9 +294,18 @@ const browserTypeTool = defineTool({
       };
     }
 
+    // Include auto-snapshot so the model sees updated page state
+    let content = `Typed "${text}" into ${ref}`;
+    if (result.snapshot) {
+      content += `\n\n${result.snapshot}`;
+    }
+    if (result.elementCount !== undefined) {
+      content += `\n\nInteractive elements: ${result.elementCount}`;
+    }
+
     return {
-      content: [{ type: "text", text: `Typed "${text}" into ${ref}` }],
-      details: { typed: true, ref, text },
+      content: [{ type: "text", text: content }],
+      details: { typed: true, ref, text, elementCount: result.elementCount },
     };
   },
 
@@ -288,7 +316,8 @@ const browserTypeTool = defineTool({
   renderResult(result, _options, theme, _context) {
     const d = result.details as Record<string, unknown> | undefined;
     if (d?.error) return new Text(theme.fg("error", `Type failed: ${d.error}`), 0, 0);
-    return new Text(theme.fg("success", `📝 typed "${d?.text || "?"}"`), 0, 0);
+    const ec = d?.elementCount as number | undefined;
+    return new Text(theme.fg("success", `📝 typed "${d?.text || "?"}"${ec !== undefined ? ` · ${ec} elements` : ""}`), 0, 0);
   },
 });
 
@@ -316,9 +345,18 @@ const browserScrollTool = defineTool({
       };
     }
 
+    // Include auto-snapshot so the model sees updated page state
+    let content = `Scrolled ${direction}`;
+    if (result.snapshot) {
+      content += `\n\n${result.snapshot}`;
+    }
+    if (result.elementCount !== undefined) {
+      content += `\n\nInteractive elements: ${result.elementCount}`;
+    }
+
     return {
-      content: [{ type: "text", text: `Scrolled ${direction}` }],
-      details: { direction },
+      content: [{ type: "text", text: content }],
+      details: { direction, elementCount: result.elementCount },
     };
   },
 
@@ -329,7 +367,8 @@ const browserScrollTool = defineTool({
   renderResult(result, _options, theme, _context) {
     const d = result.details as Record<string, unknown> | undefined;
     if (d?.error) return new Text(theme.fg("error", "Scroll failed"), 0, 0);
-    return new Text(theme.fg("dim", `↕ ${d?.direction || "?"}`), 0, 0);
+    const ec = d?.elementCount as number | undefined;
+    return new Text(theme.fg("dim", `↕ ${d?.direction || "?"}${ec !== undefined ? ` · ${ec} elements` : ""}`), 0, 0);
   },
 });
 
@@ -399,9 +438,18 @@ const browserBackTool = defineTool({
       };
     }
 
+    // Include auto-snapshot so the model sees the previous page
+    let content = `Went back to: ${result.newUrl || "?"}`;
+    if (result.snapshot) {
+      content += `\n\n${result.snapshot}`;
+    }
+    if (result.elementCount !== undefined) {
+      content += `\n\nInteractive elements: ${result.elementCount}`;
+    }
+
     return {
-      content: [{ type: "text", text: `Went back to: ${result.newUrl || "?"}` }],
-      details: { newUrl: result.newUrl, newTitle: result.newTitle },
+      content: [{ type: "text", text: content }],
+      details: { newUrl: result.newUrl, newTitle: result.newTitle, elementCount: result.elementCount },
     };
   },
 
@@ -412,7 +460,8 @@ const browserBackTool = defineTool({
   renderResult(result, _options, theme, _context) {
     const d = result.details as Record<string, unknown> | undefined;
     if (d?.error) return new Text(theme.fg("error", "Go back failed"), 0, 0);
-    return new Text(theme.fg("dim", `← ${(d?.newUrl as string) || ""}`), 0, 0);
+    const ec = d?.elementCount as number | undefined;
+    return new Text(theme.fg("dim", `← ${(d?.newUrl as string) || ""}${ec !== undefined ? ` · ${ec} elements` : ""}`), 0, 0);
   },
 });
 
@@ -442,9 +491,18 @@ const browserPressTool = defineTool({
       };
     }
 
+    // Include auto-snapshot so the model sees updated page state
+    let content = `Pressed "${key}"`;
+    if (result.snapshot) {
+      content += `\n\n${result.snapshot}`;
+    }
+    if (result.elementCount !== undefined) {
+      content += `\n\nInteractive elements: ${result.elementCount}`;
+    }
+
     return {
-      content: [{ type: "text", text: `Pressed "${key}"` }],
-      details: { key },
+      content: [{ type: "text", text: content }],
+      details: { key, elementCount: result.elementCount },
     };
   },
 
@@ -455,7 +513,8 @@ const browserPressTool = defineTool({
   renderResult(result, _options, theme, _context) {
     const d = result.details as Record<string, unknown> | undefined;
     if (d?.error) return new Text(theme.fg("error", "Press failed"), 0, 0);
-    return new Text(theme.fg("dim", `⌨ ${d?.key || ""}`), 0, 0);
+    const ec = d?.elementCount as number | undefined;
+    return new Text(theme.fg("dim", `⌨ ${d?.key || ""}${ec !== undefined ? ` · ${ec} elements` : ""}`), 0, 0);
   },
 });
 

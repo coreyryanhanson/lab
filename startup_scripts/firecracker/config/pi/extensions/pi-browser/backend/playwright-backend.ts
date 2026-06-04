@@ -38,6 +38,10 @@ export interface PlaywrightInteractionResult {
   error?: string;
   newUrl?: string;
   newTitle?: string;
+  /** Auto-captured snapshot after interaction */
+  snapshot?: string;
+  /** Number of elements in the auto-captured snapshot */
+  elementCount?: number;
 }
 
 export interface PlaywrightScreenshotResult {
@@ -307,7 +311,10 @@ export async function click(
     const newTitle = await page.title();
     sessionManager.updateSession(taskId, { currentUrl: newUrl, currentTitle: newTitle });
 
-    return { success: true, newUrl, newTitle };
+    // Auto-snapshot after click so the model sees updated page state
+    const snapshotResult = await takeSnapshot(taskId, page);
+
+    return { success: true, newUrl, newTitle, snapshot: snapshotResult.snapshot, elementCount: snapshotResult.elementCount };
   } catch (err: unknown) {
     return {
       success: false,
@@ -346,7 +353,10 @@ export async function type(
     await locator.click(); // Focus first
     await locator.fill(text);
 
-    return { success: true };
+    // Auto-snapshot after type so the model sees updated page state
+    const snapshotResult = await takeSnapshot(taskId, page);
+
+    return { success: true, snapshot: snapshotResult.snapshot, elementCount: snapshotResult.elementCount };
   } catch (err: unknown) {
     return {
       success: false,
@@ -373,7 +383,10 @@ export async function scroll(
     }, delta);
     await page.waitForTimeout(200);
 
-    return { success: true };
+    // Auto-snapshot after scroll so the model sees updated page state
+    const snapshotResult = await takeSnapshot(taskId, page);
+
+    return { success: true, snapshot: snapshotResult.snapshot, elementCount: snapshotResult.elementCount };
   } catch (err: unknown) {
     return {
       success: false,
@@ -426,7 +439,10 @@ export async function goBack(taskId: string): Promise<PlaywrightInteractionResul
     const newTitle = await page.title();
     sessionManager.updateSession(taskId, { currentUrl: newUrl, currentTitle: newTitle });
 
-    return { success: true, newUrl, newTitle };
+    // Auto-snapshot after goBack so the model sees the previous page
+    const snapshotResult = await takeSnapshot(taskId, page);
+
+    return { success: true, newUrl, newTitle, snapshot: snapshotResult.snapshot, elementCount: snapshotResult.elementCount };
   } catch (err: unknown) {
     return {
       success: false,
@@ -449,12 +465,38 @@ export async function press(
   try {
     await page.keyboard.press(key);
     await page.waitForTimeout(200);
-    return { success: true };
+
+    // Auto-snapshot after press so the model sees updated page state
+    const snapshotResult = await takeSnapshot(taskId, page);
+
+    return { success: true, snapshot: snapshotResult.snapshot, elementCount: snapshotResult.elementCount };
   } catch (err: unknown) {
     return {
       success: false,
       error: `Press failed: ${err instanceof Error ? err.message : String(err)}`,
     };
+  }
+}
+
+// ─── Snapshot Helper ──────────────────────────────────────────────────
+
+async function takeSnapshot(taskId: string, page: Page): Promise<{ snapshot: string; elementCount: number }> {
+  try {
+    const snap = await page.ariaSnapshot();
+    const parsed = parseSnapshot(snap);
+    // Update cache
+    getElementCache(taskId).clear();
+    for (const [ref, node] of parsed.elements) {
+      getElementCache(taskId).set(ref, node);
+    }
+
+    // Check for auto-dismissed dialogs
+    const dialogInfo = formatDialogLog(taskId);
+    const text = dialogInfo ? parsed.text + "\n\n--- Auto-dismissed dialogs ---\n" + dialogInfo : parsed.text;
+
+    return { snapshot: text, elementCount: parsed.count };
+  } catch {
+    return { snapshot: "(snapshot not available)", elementCount: 0 };
   }
 }
 

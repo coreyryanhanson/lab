@@ -50,8 +50,19 @@ def handle_init(cmd):
     if seed is not None:
         kwargs["seed"] = int(seed)
     _pw = InvisiblePlaywright(**kwargs)
-    _browser = _pw.__enter__()
-    _page = _browser.new_page()
+    try:
+        _browser = _pw.__enter__()
+        _page = _browser.new_page()
+    except Exception:
+        # Ensure cleanup on failure (e.g., new_page() throws)
+        try:
+            if _browser is not None:
+                _pw.__exit__(None, None, None)
+        except Exception:
+            pass
+        _pw = None
+        _browser = None
+        raise
     send_response(cmd["id"], {"ok": True})
 
 
@@ -168,15 +179,25 @@ def handle_evaluate(cmd):
 
 def handle_cleanup(cmd):
     global _pw, _browser, _page
-    if _page:
-        try: _page.close()
-        except Exception: pass
+    # Close page first, then browser context, then playwright
+    if _page is not None:
+        try:
+            _page.close()
+        except Exception:
+            pass
         _page = None
-    if _pw:
-        try: _pw.__exit__(None, None, None)
-        except Exception: pass
-        _pw = None
+    if _browser is not None:
+        try:
+            _browser.close()
+        except Exception:
+            pass
         _browser = None
+    if _pw is not None:
+        try:
+            _pw.__exit__(None, None, None)
+        except Exception:
+            pass
+        _pw = None
     send_response(cmd["id"], {"ok": True})
 
 

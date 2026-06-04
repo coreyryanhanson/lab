@@ -47,12 +47,47 @@ export interface InteractionResult {
   error?: string;
   newUrl?: string;
   newTitle?: string;
+  /** Auto-captured snapshot after interaction, when available */
+  snapshot?: string;
+  /** Number of elements in the auto-captured snapshot */
+  elementCount?: number;
 }
 
 export interface ScreenshotResult {
   success: boolean;
   dataUri: string;
   error?: string;
+}
+
+// ─── Helpers ────────────────────────────────────────────────────────────
+
+/**
+ * Try to escalate to stealth backend when bot detection is triggered
+ * and the strategy is auto. Returns the stealth result if successful,
+ * or null if escalation wasn't applicable or failed.
+ */
+async function escalateToStealthIfAuto(
+  result: { url: string; error?: string; botDetected?: boolean },
+  strategy: string,
+  taskId: string,
+  timeoutMs: number,
+): Promise<{ success: boolean; url: string; title: string; content: string; elementCount?: number; backendUsed: BackendLevel; botDetectionWarning: boolean; error?: string } | null> {
+  if (result.botDetected && strategy === "auto") {
+    sessionManager.updateSession(taskId, { level: "stealth" });
+    const stealthResult = await stealthBackend.navigate(result.url, taskId, timeoutMs);
+    if (stealthResult.success) {
+      return {
+        success: true,
+        url: stealthResult.url,
+        title: stealthResult.title,
+        content: stealthResult.snapshot,
+        elementCount: stealthResult.elementCount,
+        backendUsed: "stealth",
+        botDetectionWarning: true,
+      };
+    }
+  }
+  return null;
 }
 
 // ─── Navigation ───────────────────────────────────────────────────────
@@ -145,22 +180,9 @@ export async function navigate(
       session.currentTitle = result.title;
 
       // Bot detected on successful load — try stealth escalation
-      if (result.botDetected && strategy === "auto") {
-        sessionManager.updateSession(taskId, { level: "stealth" });
-        const stealthResult = await stealthBackend.navigate(result.url, taskId, timeoutMs);
-        if (stealthResult.success) {
-          return {
-            success: true,
-            url: stealthResult.url,
-            title: stealthResult.title,
-            content: stealthResult.snapshot,
-            elementCount: stealthResult.elementCount,
-            backendUsed: "stealth",
-            botDetectionWarning: true,
-          };
-        }
-        // Stealth failed — fall through to return chromium result with warning
-      }
+      const escalated = await escalateToStealthIfAuto(result, strategy, taskId, timeoutMs);
+      if (escalated) return escalated;
+      // Stealth failed or not applicable — fall through to return chromium result with warning
 
       const botWarn = result.botDetected && strategy === "auto";
       return {
@@ -173,21 +195,12 @@ export async function navigate(
     }
 
     // Playwright failed — escalate to Level 3 (stealth) if auto
+    const escalated = await escalateToStealthIfAuto(result, strategy, taskId, timeoutMs);
+    if (escalated) return escalated;
+
+    // Stealth also failed or not applicable — report original error
+    // Re-check: if we had bot detection but escalation failed
     if (result.botDetected && strategy === "auto") {
-      sessionManager.updateSession(taskId, { level: "stealth" });
-      const stealthResult = await stealthBackend.navigate(result.url, taskId, timeoutMs);
-      if (stealthResult.success) {
-        return {
-          success: true,
-          url: stealthResult.url,
-          title: stealthResult.title,
-          content: stealthResult.snapshot,
-          elementCount: stealthResult.elementCount,
-          backendUsed: "stealth",
-          botDetectionWarning: true,
-        };
-      }
-      // Stealth also failed — report original error
       return {
         success: false, url: result.url, title: "",
         content: result.error || "Unknown error",
