@@ -8,7 +8,7 @@
 import { chromium } from "playwright";
 import type { Browser, BrowserContext, Page } from "playwright";
 import { parseSnapshot, buildLocator, type AriaCachedNode } from "../utils/accessibility-tree";
-import { installDialogHandlers, formatDialogLog } from "../utils/cdp-supervisor";
+import { installDialogHandlers, formatDialogLog, formatConsoleLog, getConsoleLog as getRawConsoleLog, clearConsoleLog, clearAllLogs } from "../utils/cdp-supervisor";
 import { sessionManager } from "../utils/session-manager";
 
 // ─── Types ────────────────────────────────────────────────────────────
@@ -399,6 +399,7 @@ export async function scroll(
 
 export async function screenshot(
   taskId: string,
+  fullPage: boolean = false,
 ): Promise<PlaywrightScreenshotResult> {
   const page = getPage(taskId);
   if (!page) {
@@ -406,12 +407,20 @@ export async function screenshot(
   }
 
   try {
+    // Use JPEG at 80% quality for smaller payloads (vs PNG)
+    // Constrain viewport width to 1024px max for manageable screenshots
+    const currentViewport = page.viewportSize();
+    if (currentViewport && currentViewport.width > 1024) {
+      await page.setViewportSize({ width: 1024, height: currentViewport.height });
+    }
+
     const buffer = await page.screenshot({
-      type: "png",
-      fullPage: false,
+      type: "jpeg",
+      quality: 80,
+      fullPage,
     });
     const base64 = buffer.toString("base64");
-    const dataUri = `data:image/png;base64,${base64}`;
+    const dataUri = `data:image/jpeg;base64,${base64}`;
 
     return { success: true, dataUri };
   } catch (err: unknown) {
@@ -502,12 +511,26 @@ async function takeSnapshot(taskId: string, page: Page): Promise<{ snapshot: str
 
 // ─── Console ───────────────────────────────────────────────────────────
 
+/**
+ * Retrieve captured console messages for a task.
+ * Console events are captured automatically via page.on('console', ...)
+ * installed during createSession.
+ */
 export async function getConsoleMessages(
   taskId: string,
 ): Promise<PlaywrightConsoleMessage[]> {
-  // Note: Console capture requires setup during page creation.
-  // For now, return empty — we'll add CDP-based capture in Phase 4.
-  return [];
+  const raw = getRawConsoleLog(taskId);
+  return raw.map((c) => ({
+    type: c.type,
+    text: c.text,
+  }));
+}
+
+/**
+ * Clear captured console log for a task.
+ */
+export async function clearConsole(taskId: string): Promise<void> {
+  clearConsoleLog(taskId);
 }
 
 export async function evaluate(

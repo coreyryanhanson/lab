@@ -122,8 +122,29 @@ export async function navigate(
     const title = extractTitle(root);
     const needsJavaScript = detectNeedsJavaScript(root);
 
-    // Remove script, style, noscript tags for cleaner markdown
-    root.querySelectorAll("script, style, noscript, svg").forEach((el) => el.remove());
+    // Remove script, style, noscript tags for cleaner markdown.
+    // SVGs are kept as text placeholders based on aria-label or title.
+    root.querySelectorAll("script, style, noscript").forEach((el) => el.remove());
+    // Convert SVGs to descriptive placeholders instead of stripping
+    root.querySelectorAll("svg").forEach((el) => {
+      const ariaLabel = el.getAttribute("aria-label") || el.getAttribute("title") || "";
+      const role = el.getAttribute("role") || "";
+      const img = el.querySelector("image") || el.querySelector("img");
+      const alt = img?.getAttribute("aria-label") || img?.getAttribute("alt") || "";
+      const label = ariaLabel || alt || role || "";
+      if (label) {
+        el.replaceWith(`[SVG: ${label.trim()}]`);
+      } else {
+        // Check for text content inside SVG (e.g., chart labels)
+        const textEls = el.querySelectorAll("text");
+        const texts = textEls.map((t) => t.textContent?.trim()).filter(Boolean);
+        if (texts.length > 0) {
+          el.replaceWith(`[SVG with text: ${texts.join("; ").slice(0, 120)}]`);
+        } else {
+          el.replaceWith(`[SVG graphic]`);
+        }
+      }
+    });
 
     const markdown = turndown.turndown(root.innerHTML || root.textContent || "");
 

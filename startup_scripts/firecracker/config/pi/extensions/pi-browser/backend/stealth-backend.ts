@@ -429,6 +429,16 @@ export async function press(taskId: string, key: string): Promise<StealthInterac
   }
 }
 
+export async function getConsoleMessages(taskId: string): Promise<Array<{ type: string; text: string }>> {
+  // Console capture in stealth backend would require Python-side event listeners.
+  // For now, return empty — most stealth use cases don't need console output.
+  return [];
+}
+
+export async function clearConsole(taskId: string): Promise<void> {
+  // No-op for now; console capture not yet implemented in stealth bridge.
+}
+
 export async function evaluate(taskId: string, expression: string): Promise<{ success: boolean; result?: unknown; error?: string }> {
   try {
     const bridge = getBridge(taskId);

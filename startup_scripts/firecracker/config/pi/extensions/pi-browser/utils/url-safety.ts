@@ -30,18 +30,36 @@ const BLOCKED_SCHEMES = ["file:", "ftp:", "data:", "javascript:", "vbscript:"];
 
 // ─── Secret detection ────────────────────────────────────────────────
 
-/** Patterns that look like API keys, tokens, or passwords in URLs */
+/**
+ * Patterns that look like API keys, tokens, or passwords in URLs.
+ * Follows hermes-agent's approach: checks for known key prefixes rather
+ * than generic length-based patterns, reducing false positives.
+ * Also checks the percent-decoded URL for encoded secrets.
+ */
 const SECRET_PATTERNS = [
-  // AWS keys
-  /[A-Z0-9]{40}/,
-  // Generic API keys in query params
+  // Generic API keys in query params (specific param names)
   /[\?&](api[_-]?key|token|secret|password|passwd|auth|credential|private[_-]?key|access[_-]?key)=/i,
-  // Bearer tokens
-  /Bearer\s+[A-Za-z0-9\-._~+/]+=*/i,
-  // GitHub tokens
-  /gh[ps]_[A-Za-z0-9_]{36}/,
-  // Slack tokens
+  // Bearer tokens in headers (unlikely in URLs but check anyway)
+  /Bearer\s+[A-Za-z0-9\-._~+/]{20,}=*/i,
+  // GitHub tokens: ghp_, ghs_, ghg_, gho_, ghu_
+  /gh[psogu]_[A-Za-z0-9_]{36}/,
+  // Slack tokens: xoxb-, xoxp-, xoxa-, xoxs-, xoxr-
   /xox[bpras]-[A-Za-z0-9-]+/,
+  // Stripe: sk_live_, sk_test_, pk_live_, pk_test_, whsec_
+  /(sk|pk)_(live|test)_[A-Za-z0-9]+/,
+  /whsec_[A-Za-z0-9]+/,
+  // AWS access key ID (starts with AKIA)
+  /AKIA[A-Z0-9]{16}/,
+  // Google API keys (AIza prefix)
+  /AIza[0-9A-Za-z\-_]{35}/,
+  // Discord bot tokens
+  /[MN][A-Za-z\d]{23}\.[XZ][A-Za-z\d]{6}\.[A-Za-z\d]{27}/,
+  // SendGrid API keys (SG. prefix)
+  /SG\.[A-Za-z0-9-_]{22}\.[A-Za-z0-9-_]{43}/,
+  // HubSpot API keys
+  /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/,
+  // Generic secret in URL path segment (e.g., "secret=..." in path)
+  /\/secret(?:s)?\//i,
 ];
 
 // ─── Types ────────────────────────────────────────────────────────────
@@ -113,15 +131,29 @@ export function validateUrl(rawUrl: string): UrlSafetyResult {
     };
   }
 
-  // Check for secrets in URL
+  // Check for secrets in URL (raw and percent-decoded)
   const urlStr = parsed.toString();
-  for (const pattern of SECRET_PATTERNS) {
-    if (pattern.test(urlStr)) {
-      return {
-        safe: false,
-        reason: `Potential secret detected in URL. Remove sensitive parameters before navigating.`,
-        category: "secret",
-      };
+  try {
+    const decodedUrl = decodeURIComponent(urlStr);
+    for (const pattern of SECRET_PATTERNS) {
+      if (pattern.test(urlStr) || pattern.test(decodedUrl)) {
+        return {
+          safe: false,
+          reason: `Potential secret detected in URL. Remove sensitive parameters before navigating.`,
+          category: "secret",
+        };
+      }
+    }
+  } catch {
+    // If decoding fails, just check the raw URL
+    for (const pattern of SECRET_PATTERNS) {
+      if (pattern.test(urlStr)) {
+        return {
+          safe: false,
+          reason: `Potential secret detected in URL. Remove sensitive parameters before navigating.`,
+          category: "secret",
+        };
+      }
     }
   }
 

@@ -1,6 +1,7 @@
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type, StringEnum } from "@earendil-works/pi-ai";
 import { Text } from "@earendil-works/pi-tui";
+import { accessSync, constants } from "node:fs";
 import * as router from "./backend/router";
 import { sessionManager } from "./utils/session-manager";
 
@@ -160,12 +161,15 @@ const browserSnapshotTool = defineTool({
     "Get the current page's accessibility tree with @e1, @e2 element references. " +
     "Use after browser-navigate to refresh the element list, or after page changes (click, scroll) to see the updated state.",
   parameters: Type.Object({
+    full: Type.Optional(Type.Boolean({ description: "If true, return complete tree instead of compact view (default: false)" })),
     taskId: Type.Optional(Type.String({ description: "Session ID (auto-populated)" })),
   }),
 
   async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-    const tid = (params as any)?.taskId ?? taskId(ctx);
-    const result = await router.snapshot(tid);
+    const p = params as { full?: boolean; taskId?: string };
+    const tid = p?.taskId ?? taskId(ctx);
+    const full = p?.full ?? false;
+    const result = await router.snapshot(tid, full);
     updateFooterStatus(ctx);
 
     if (!result.success) {
@@ -177,12 +181,13 @@ const browserSnapshotTool = defineTool({
 
     return {
       content: [{ type: "text", text: result.snapshot || "(empty page)" }],
-      details: { elementCount: result.elementCount },
+      details: { elementCount: result.elementCount, full },
     };
   },
 
-  renderCall(_args, theme, _context) {
-    return new Text(theme.fg("toolTitle", theme.bold("browser-snapshot")), 0, 0);
+  renderCall(args, theme, _context) {
+    const label = args.full ? "full" : "compact";
+    return new Text(`${theme.fg("toolTitle", theme.bold("browser-snapshot"))} ${theme.fg("dim", label)}`, 0, 0);
   },
 
   renderResult(result, { expanded, isPartial }, theme, _context) {
@@ -191,14 +196,17 @@ const browserSnapshotTool = defineTool({
     if (d?.error) return new Text(theme.fg("error", "Snapshot failed"), 0, 0);
     const ec = (d?.elementCount as number) ?? 0;
     const content = (result.content?.[0] as any)?.text ?? "";
+    const isFull = !!(d?.full as boolean);
     if (expanded) {
       const preview = content.slice(0, 400);
       let text = theme.fg("accent", `📋 ${ec} elements`);
+      text += isFull ? "" : theme.fg("dim", " (compact)");
       text += `\n${theme.fg("dim", preview)}`;
       if (content.length > 400) text += `\n${theme.fg("muted", `… ${content.length - 400} more chars`)}`;
       return new Text(text, 0, 0);
     }
-    return new Text(theme.fg("accent", `📋 ${ec} elements (expand)`), 0, 0);
+    const label = isFull ? " (full)" : " (compact)";
+    return new Text(theme.fg("accent", `📋 ${ec} elements${label} (expand)`), 0, 0);
   },
 });
 
@@ -380,15 +388,18 @@ const browserScreenshotTool = defineTool({
   label: "Take Screenshot",
   description:
     "Take a screenshot of the current page for visual analysis. " +
-    "Returns a data URI that vision-capable models can examine.",
+    "Returns a JPEG data URI (80% quality, max 1024px wide) that vision-capable models can examine.",
   parameters: Type.Object({
     question: Type.Optional(Type.String({ description: "Optional — if provided and the model has vision, it will answer questions about the screenshot" })),
+    fullPage: Type.Optional(Type.Boolean({ description: "If true, capture full-page screenshot (default: viewport only)" })),
     taskId: Type.Optional(Type.String({ description: "Session ID (auto-populated)" })),
   }),
 
   async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-    const { taskId: tid } = params as { taskId?: string };
-    const result = await router.screenshot(tid ?? taskId(ctx));
+    const p = params as { question?: string; fullPage?: boolean; taskId?: string };
+    const tid = p?.taskId ?? taskId(ctx);
+    const fullPage = p?.fullPage ?? false;
+    const result = await router.screenshot(tid, fullPage);
 
     if (!result.success) {
       return {
@@ -525,39 +536,86 @@ const browserConsoleTool = defineTool({
   name: "browser-console",
   label: "Browser Console",
   description:
-    "Execute JavaScript in the current page context and see the result. " +
+    "Execute JavaScript in the current page context and see the result, " +
+    "or read captured console output (log, warn, error, info). " +
     "Useful for inspecting page state, reading hidden content, or debugging.",
   parameters: Type.Object({
-    expression: Type.String({ description: "JavaScript expression to evaluate in the page context" }),
+    expression: Type.Optional(Type.String({ description: "JavaScript expression to evaluate in the page context. If omitted, returns captured console messages." })),
+    clear: Type.Optional(Type.Boolean({ description: "If true, clear the captured console log (no other action)" })),
     taskId: Type.Optional(Type.String({ description: "Session ID (auto-populated)" })),
   }),
 
   async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-    const { expression, taskId: tid } = params as { expression: string; taskId?: string };
-    const result = await router.evaluate(tid ?? taskId(ctx), expression);
+    const p = params as { expression?: string; clear?: boolean; taskId?: string };
+    const tid = p?.taskId ?? taskId(ctx);
 
-    if (!result.success) {
+    // Handle clear first (side-effect only)
+    if (p?.clear) {
+      await router.clearConsole(tid);
       return {
-        content: [{ type: "text", text: `Evaluation failed: ${result.error ?? "unknown"}` }],
+        content: [{ type: "text", text: "Console log cleared." }],
+        details: { cleared: true },
+      };
+    }
+
+    // If expression provided, evaluate it
+    if (p?.expression) {
+      const result = await router.evaluate(tid, p.expression);
+
+      if (!result.success) {
+        return {
+          content: [{ type: "text", text: `Evaluation failed: ${result.error ?? "unknown"}` }],
+          details: { error: true },
+        };
+      }
+
+      const formatted = typeof result.result === "string" ? result.result : JSON.stringify(result.result, null, 2);
+      return {
+        content: [{ type: "text", text: formatted ?? "undefined" }],
+        details: { result: result.result },
+      };
+    }
+
+    // No expression, no clear — read console messages
+    const consoleResult = await router.getConsoleMessages(tid);
+    if (!consoleResult.success) {
+      return {
+        content: [{ type: "text", text: `Failed to read console: ${consoleResult.error}` }],
         details: { error: true },
       };
     }
 
-    const formatted = typeof result.result === "string" ? result.result : JSON.stringify(result.result, null, 2);
+    if (consoleResult.messages.length === 0) {
+      return {
+        content: [{ type: "text", text: "No console messages captured." }],
+        details: { count: 0 },
+      };
+    }
+
+    const formatted = consoleResult.messages
+      .map((m) => `[${m.type}] ${m.text}`)
+      .join("\n");
     return {
-      content: [{ type: "text", text: formatted ?? "undefined" }],
-      details: { result: result.result },
+      content: [{ type: "text", text: formatted }],
+      details: { count: consoleResult.messages.length, messages: consoleResult.messages },
     };
   },
 
   renderCall(args, theme, _context) {
-    return new Text(`${theme.fg("toolTitle", theme.bold("browser-console"))} ${theme.fg("dim", args.expression.slice(0, 60))}`, 0, 0);
+    if (args.clear) return new Text(theme.fg("toolTitle", theme.bold("browser-console clear")), 0, 0);
+    if (args.expression) {
+      return new Text(`${theme.fg("toolTitle", theme.bold("browser-console"))} ${theme.fg("dim", args.expression.slice(0, 60))}`, 0, 0);
+    }
+    return new Text(theme.fg("toolTitle", theme.bold("browser-console read")), 0, 0);
   },
 
   renderResult(result, _options, theme, _context) {
     const d = result.details as Record<string, unknown> | undefined;
-    if (d?.error) return new Text(theme.fg("error", "JS eval failed"), 0, 0);
-    return new Text(theme.fg("dim", `JS → ${JSON.stringify(d?.result)?.slice(0, 80) || "ok"}`), 0, 0);
+    if (d?.error) return new Text(theme.fg("error", "Console operation failed"), 0, 0);
+    if (d?.cleared) return new Text(theme.fg("dim", "Console cleared"), 0, 0);
+    if (d?.result !== undefined) return new Text(theme.fg("dim", `JS → ${JSON.stringify(d.result)?.slice(0, 80) || "ok"}`), 0, 0);
+    if (d?.count !== undefined) return new Text(theme.fg("dim", `📋 ${d.count} console messages`), 0, 0);
+    return new Text(theme.fg("dim", "Console ok"), 0, 0);
   },
 });
 
@@ -578,8 +636,7 @@ const browserStatusCommand = {
     else backends.push("chromium (offline)");
     // Check stealth availability
     try {
-      const { execSync } = require("child_process");
-      execSync("test -x /opt/ipw-pyenv/bin/python", { stdio: "pipe" });
+      accessSync("/opt/ipw-pyenv/bin/python", constants.X_OK);
       backends.push("stealth");
     } catch {
       backends.push("stealth (offline)");
