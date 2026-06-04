@@ -52,7 +52,7 @@ def handle_init(cmd):
     _pw = InvisiblePlaywright(**kwargs)
     try:
         _browser = _pw.__enter__()
-        _page = _browser.new_page()
+        _page = _browser.new_page(bypass_csp=True)
     except Exception:
         # Ensure cleanup on failure (e.g., new_page() throws)
         try:
@@ -132,16 +132,19 @@ def handle_scroll(cmd):
     global _page
     params = cmd.get("params", {})
     direction = params.get("direction", "down")
-    delta = 800 if direction == "down" else -800
-    _page.evaluate(f"window.scrollBy({{top: {delta}, behavior: 'smooth'}})")
+    delta_y = 800 if direction == "down" else -800
+    # Use native mouse wheel event instead of evaluate() to avoid CSP issues
+    # and to simulate real user scrolling behavior.
+    _page.mouse.wheel(0, delta_y)
     _page.wait_for_timeout(200)
     send_response(cmd["id"], {"ok": True})
 
 
 def handle_screenshot(cmd):
     global _page
-    b64_bytes = _page.screenshot(type="png", full_page=False)
-    data_uri = "data:image/png;base64," + base64.b64encode(b64_bytes).decode("ascii")
+    # JPEG at 80% quality to match chromium backend — smaller payload for vision models
+    b64_bytes = _page.screenshot(type="jpeg", quality=80, full_page=False)
+    data_uri = "data:image/jpeg;base64," + base64.b64encode(b64_bytes).decode("ascii")
     send_response(cmd["id"], {"dataUri": data_uri})
 
 
@@ -198,7 +201,8 @@ def handle_cleanup(cmd):
         except Exception:
             pass
         _pw = None
-    send_response(cmd["id"], {"ok": True})
+    # Use cmd.get() to handle shutdown messages that may omit id
+    send_response(cmd.get("id", 0), {"ok": True})
 
 
 # ─── Method dispatch ──────────────────────────────────────────────────
