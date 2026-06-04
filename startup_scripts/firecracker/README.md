@@ -117,7 +117,33 @@ sudo usermod -aG kvm $USER
 │   ├── debian-trixie.id_rsa       # SSH private key (DO NOT COMMIT)
 │   └── debian-trixie.id_rsa.pub  # SSH public key
 ├── config/
-│   └── opencode-config.json       # OpenCode configuration template
+│   ├── opencode/
+│   │   ├── config.json              # OpenCode configuration template
+│   │   ├── package.json             # Plugin dependency (@opencode-ai/plugin)
+│   │   ├── install_skills.sh        # Installer: copies tools/utils/skills to ~/.config/opencode/
+│   │   ├── skills/
+│   │   │   ├── image-describe/SKILL.md   # Image description skill
+│   │   │   └── image-transcribe/SKILL.md # Image text transcription skill
+│   │   ├── tools/
+│   │   │   ├── image-describe.ts    # Vision LLM image description tool
+│   │   │   ├── image-transcribe.ts  # Vision LLM image transcription tool
+│   │   │   └── search.ts           # SearXNG web search tool (OpenCode plugin)
+│   │   └── utils/
+│   │       └── vision-api.ts        # Venice AI vision API helper
+│   ├── pi/
+│   │   ├── auth.json                # API key config ($VENICE_API_KEY)
+│   │   ├── models.json             # Provider/model definitions
+│   │   ├── settings.json           # Default provider, model, thinking level
+│   │   └── extensions/
+│   │       ├── pi-browser/         # Browser automation extension (10 tools, 3 backends)
+│   │       ├── opencode-zen/       # Free Zen models provider extension
+│   │       ├── searxng-search/     # SearXNG web search extension
+│   │       └── venice-ai/          # Venice AI models provider extension
+│   ├── searxng/
+│   │   ├── searxng.service         # systemd unit file (granian WSGI)
+│   │   └── settings.yml            # SearXNG instance settings
+│   └── chroot-scripts/
+│       └── install-nvm-node.sh     # nvm + Node.js + OpenCode installer for chroot
 ├── .env                            # Environment variables / secrets (DO NOT COMMIT)
 ├── .env.example                    # Environment variable template
 ├── release-v1.15.1-x86_64/
@@ -128,6 +154,7 @@ sudo usermod -aG kvm $USER
 │   ├── project-a.ext4             # Writable overlay for project-a
 │   ├── project-a.base_checksum    # MD5 of base rootfs when overlay was created
 │   └── ...                        # Other overlay images
+├── rescue.md                      # Troubleshooting: init_base.sh crash recovery
 ├── config.sh                      # Shared configuration variables
 ├── init_base.sh                   # Build the base rootfs image
 ├── create_overlay.sh              # Create a new overlay
@@ -171,7 +198,7 @@ This will:
 - Run `debootstrap` for a minimal Debian Trixie install
 - Install SSH, Python 3, Node.js, OpenCode, and common utilities
 - Create SSH keys for root login
-- Configure OpenCode with `config/opencode-config.json`
+- Configure OpenCode with `config/opencode/config.json`
 - Inject environment variables from `.env` (API keys, git config, etc.)
 - Generate the ext4 base image at `base/rootfs.ext4`
 
@@ -348,6 +375,7 @@ The base rootfs includes:
 - **Node.js** — Installed via nvm (LTS version)
 - **OpenCode** — Installed globally via npm (`opencode-ai@latest`)
 - **uv** — Fast Python package manager by Astral
+- **Pi Coding Agent** — Installed via npm (`@earendil-works/pi-coding-agent`)
 - **Common utilities** — curl, wget, git, build-essential, ca-certificates
 
 ### Network Configuration
@@ -403,6 +431,11 @@ To configure before building:
 3. Rebuild the base image: `sudo ./init_base.sh`
 
 **Note:** The `.env` file is gitignored to prevent accidentally committing secrets.
+
+For details on Pi Coding Agent extensions (pi-browser, opencode-zen,
+searxng-search, venice-ai), OpenCode vision tools and skills, the SearXNG
+service configuration, and chroot build scripts, see
+[`config/README.md`](config/README.md).
 
 ## Security Considerations
 
@@ -492,6 +525,19 @@ If curl from inside the VM fails with "No route to host":
 ```bash
 sudo firewall-cmd --zone=public --list-rich-rules
 ```
+
+### init_base.sh crash recovery
+
+If `init_base.sh` crashes mid-build (e.g., due to network failure or
+interruption), it may leave `/proc`, `/sys`, and `/dev` mounted inside
+`base/debian-trixie-rootfs/`. This prevents re-running the script because
+`debootstrap` cannot remove the working directory.
+
+See **rescue.md** for the full troubleshooting guide, including:
+
+- How to check for stale mounts inside the rootfs directory
+- Manual cleanup steps (`sudo umount` + `sudo rm -rf`)
+- The EXIT cleanup trap fix that prevents this issue
 
 ### Cleanup stuck resources
 
@@ -639,3 +685,18 @@ Stops the VM and cleans up all resources:
 - Resets overlay file ownership
 
 **Usage:** `sudo ./cleanup.sh`
+
+### rescue.md
+
+Troubleshooting guide for recovering from `init_base.sh` crashes. If the build
+script is interrupted mid-debootstrap, `/proc`, `/sys`, and `/dev` may remain
+mounted inside `base/debian-trixie-rootfs/`, blocking subsequent runs. Covers:
+
+- Detecting stale mounts inside the rootfs working directory
+- Manual cleanup steps (`sudo umount` for each mount, then `sudo rm -rf`)
+- The EXIT cleanup trap in `init_base.sh` that should prevent this issue
+
+### install_skills.sh
+
+Installs OpenCode vision tools and skills. See [`config/README.md`](config/README.md)
+for details. Located at `config/opencode/install_skills.sh`.

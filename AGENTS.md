@@ -1,14 +1,15 @@
 # AGENTS.md — Lab
 
-Collection of shell scripts and reference notes. The main project is the Firecracker microVM manager under `startup_scripts/firecracker/`.
+Collection of shell scripts and reference notes. The main project is the Firecracker microVM manager under `startup_scripts/firecracker/`. Licensed under GPL-3.0 (see `LICENSE`).
 
 ## Repo layout
 
 - `startup_scripts/firecracker/` — OverlayFS-based Firecracker VM manager (primary focus)
+- `startup_scripts/firecracker/config/` — Guest VM configuration (Pi Coding Agent, OpenCode, SearXNG, chroot scripts)
 - `startup_scripts/open-webui/` — Open WebUI + SearXNG via podman-compose
-- `bash/common_commands/` — Reference markdown files for ffmpeg, podman, ssh, etc.
+- `bash/common_commands/` — Reference markdown files for ffmpeg, pdftk, podman, ssh, etc.
 
-No tests, no linter, no typechecker, no CI. No `package.json` at root.
+No tests, no linter, no typechecker, no CI. No `package.json` at repo root.
 
 ## Firecracker workflow (ordered)
 
@@ -23,6 +24,7 @@ All commands run from `startup_scripts/firecracker/`. Most require `sudo`.
 ## Key gotchas
 
 - `init_base.sh` sources `.env` directly — script silently succeeds but `.env` must exist with all vars (even empty).
+- `init_base.sh` can leave virtual filesystems mounted if it crashes mid-build — see `rescue.md` for manual recovery steps and the cleanup trap fix.
 - Overlay checksum: `start.sh` validates overlay was created against current base. Rebuilding base invalidates existing overlays.
 - `extract.sh` / `inject.sh` require VM to be **stopped**.
 - `inject.sh` requires the overlay to have been **booted at least once** (overlay-init creates the `root/` and `work/` dirs inside the ext4).
@@ -34,6 +36,45 @@ All commands run from `startup_scripts/firecracker/`. Most require `sudo`.
 - `.gitignore` excludes `.env`, `keys/`, `secrets/`, plus build artifacts (`base/`, `extracted-*/`, `images/`, `overlays/`, `release*/`).
 - Sparse overlay files show 8G apparent but small actual usage. Use `bash show_disk_usage.sh` to see both.
 
+## Guest VM configuration (`config/`)
+
+### `config/pi/` — Pi Coding Agent
+
+- `auth.json` — API key config (references `$VENICE_API_KEY`)
+- `models.json` — Provider/model definitions (currently local-llama pointing to host llama.cpp)
+- `settings.json` — Default provider, model, thinking level
+
+#### `config/pi/extensions/` — Pi extensions (loaded into guest VM)
+
+- **pi-browser** — Full browser automation (10 tools: navigate, snapshot, click, type, scroll, screenshot, get-images, back, press, console). Three backends: HTTP fetch (static), Playwright Chromium (JS), stealth Firefox (bot-protected). Status bar integration + `/browser-status` command.
+- **opencode-zen** — Registers 4 free Zen models (deepseek-v4-flash-free, mimo-v2.5-free, nemotron-3-super-free, big-pickle) as a custom provider. No API key needed.
+- **searxng-search** — Web search via local SearXNG instance. Supports query, count, language, safesearch, time_range, category, engines filters. Startup health check + `/searxng-status` command.
+- **venice-ai** — Dynamically fetches and registers all Venice AI private text models as a provider. Requires `VENICE_API_KEY`.
+
+### `config/opencode/` — OpenCode
+
+- `config.json` — OpenCode configuration
+- `package.json` — Plugin dependency
+- `install_skills.sh` — Installer script that copies tools, utils, and skills to `~/.config/opencode/`
+- `tools/` — 3 TypeScript tools:
+  - `image-describe.ts` — Vision LLM image description
+  - `image-transcribe.ts` — Vision LLM image transcription
+  - `search.ts` — SearXNG web search tool
+- `utils/` — Shared utilities:
+  - `vision-api.ts` — Venice AI vision API helper (base64 encoding, file resolution, API key management)
+- `skills/` — 2 vision skills:
+  - `image-describe/SKILL.md` — Image description (alt-text, artistic, technical styles)
+  - `image-transcribe/SKILL.md` — Image text transcription
+
+### `config/searxng/` — SearXNG service
+
+- `searxng.service` — systemd unit file (granian WSGI server)
+- `settings.yml` — Instance settings (JSON format enabled, port 8888)
+
+### `config/chroot-scripts/` — Base image build scripts
+
+- `install-nvm-node.sh` — Installs nvm, Node.js LTS, OpenCode, and creates `/etc/profile.d/nvm.sh`. Run during `init_base.sh` debootstrap.
+
 ## Guest software (pre-installed in base image)
 
-Python 3 + pip + uv, Node.js via nvm (LTS), OpenCode (`opencode-ai@latest`), Pi Coding Agent (`@earendil-works/pi-coding-agent`).
+Python 3 + pip + uv, Node.js via nvm (LTS), OpenCode (`opencode-ai@latest` with vision tools and skills), Pi Coding Agent (`@earendil-works/pi-coding-agent` with pi-browser, opencode-zen, searxng-search, and venice-ai extensions).
