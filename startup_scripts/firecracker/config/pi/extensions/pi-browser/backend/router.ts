@@ -15,6 +15,29 @@ import { validateUrl } from "../utils/url-safety";
 /** Backend that was actually used for a navigation (wider than BackendLevel — includes fetch for display) */
 export type BackendUsed = "fetch" | BackendLevel;
 
+// ─── Snapshot truncation constants ────────────────────────────────────
+
+/**
+ * Snapshots shorter than this are returned as-is (no truncation).
+ */
+const COMPACT_SNAPSHOT_NO_TRUNCATE = 2800;
+
+/**
+ * Target truncation length for compact snapshots (newline-aware).
+ */
+const COMPACT_SNAPSHOT_LIMIT = 2500;
+
+/**
+ * Snapshots exceeding this length use "very large page" strategy:
+ * keep the structural top (~2000 chars) and append a summary.
+ */
+const COMPACT_SNAPSHOT_VERY_LARGE = 8000;
+
+/**
+ * How much of the top of the tree to preserve for very large pages.
+ */
+const COMPACT_SNAPSHOT_TOP_LIMIT = 2000;
+
 // ─── Helpers — Interactive session management ──────────────────────────
 
 /**
@@ -264,6 +287,9 @@ export async function navigate(
       session.currentUrl = result.url;
       session.currentTitle = result.title;
 
+      // Store as last-nav for auto-recovery if session crashes later
+      sessionManager.setLastNav(taskId, result.url, result.title);
+
       // Bot detected on successful load — try stealth escalation
       const escalated = await escalateToStealthIfAuto(result, strategy, taskId, timeoutMs);
       if (escalated) return escalated;
@@ -320,6 +346,8 @@ export async function navigate(
     if (result.success) {
       session.currentUrl = result.url;
       session.currentTitle = result.title;
+      // Store as last-nav for auto-recovery if session crashes later
+      sessionManager.setLastNav(taskId, result.url, result.title);
       const snapshotContent = result.snapshot
         ? compactSnapshot(result.snapshot, result.elementCount)
         : "";
@@ -356,7 +384,7 @@ export async function snapshot(taskId?: string, full?: boolean): Promise<Snapsho
   const sessionResult = await requireInteractiveSession(tid);
 
   if (!sessionResult) {
-    return { success: false, snapshot: "", elementCount: 0, error: "No active session — navigate to a page first" };
+    return { success: false, snapshot: "", elementCount: 0, error: "No active session — use browser-navigate to visit a page first, then retry" };
   }
 
   return takeSnapshotAfterEscalation(tid, full ?? false);
@@ -371,18 +399,16 @@ export async function snapshot(taskId?: string, full?: boolean): Promise<Snapsho
  * plus a structural summary showing what was cut.
  */
 function compactSnapshot(snapshot: string, elementCount: number): string {
-  if (snapshot.length <= 2800) return snapshot;
+  if (snapshot.length <= COMPACT_SNAPSHOT_NO_TRUNCATE) return snapshot;
 
-  const limit = 2500;
   const remaining = elementCount > 0 ? elementCount : undefined;
 
-  // For very large pages (>8000 chars), try to preserve the top of the tree
+  // For very large pages, try to preserve the top of the tree
   // which typically contains page structure (banner, navigation, headings).
-  if (snapshot.length > 8000) {
-    // Keep first ~2000 chars of the tree top (usually page structure)
-    const topLimit = 2000;
-    let topCut = snapshot.lastIndexOf("\n", topLimit);
-    if (topCut < topLimit / 2) topCut = topLimit;
+  if (snapshot.length > COMPACT_SNAPSHOT_VERY_LARGE) {
+    // Keep first ~COMPACT_SNAPSHOT_TOP_LIMIT chars of the tree top
+    let topCut = snapshot.lastIndexOf("\n", COMPACT_SNAPSHOT_TOP_LIMIT);
+    if (topCut < COMPACT_SNAPSHOT_TOP_LIMIT / 2) topCut = COMPACT_SNAPSHOT_TOP_LIMIT;
 
     const topSection = snapshot.slice(0, topCut);
     const bottomHint = remaining
@@ -392,8 +418,8 @@ function compactSnapshot(snapshot: string, elementCount: number): string {
   }
 
   // Moderate-sized pages: cut at a natural breakpoint near the limit
-  let cut = snapshot.lastIndexOf("\n", limit);
-  if (cut < limit / 2) cut = limit;
+  let cut = snapshot.lastIndexOf("\n", COMPACT_SNAPSHOT_LIMIT);
+  if (cut < COMPACT_SNAPSHOT_LIMIT / 2) cut = COMPACT_SNAPSHOT_LIMIT;
 
   const tail = remaining
     ? `\n… ${snapshot.length - cut} more chars, ${remaining} elements total (use full=true for complete tree)`
@@ -442,7 +468,7 @@ function compactInteractionResult(result: InteractionResult): InteractionResult 
 export async function click(taskId: string | undefined, ref: string): Promise<InteractionResult> {
   const tid = taskId ?? "default";
   const sr = await requireInteractiveSession(tid);
-  if (!sr) return { success: false, error: "No active session — navigate to a page first with strategy='chromium' or 'stealth'" };
+  if (!sr) return { success: false, error: "No active session — use browser-navigate to visit a page first, then retry" };
   return refBasedInteractionOrSnapshot(tid, sr.wasAutoEscalated, async () => {
     if (sr.session.level === "chromium") return compactInteractionResult(await playwrightBackend.click(tid, ref));
     if (sr.session.level === "stealth") return compactInteractionResult(await stealthBackend.click(tid, ref));
@@ -455,7 +481,7 @@ export async function click(taskId: string | undefined, ref: string): Promise<In
 export async function type(taskId: string | undefined, ref: string, text: string): Promise<InteractionResult> {
   const tid = taskId ?? "default";
   const sr = await requireInteractiveSession(tid);
-  if (!sr) return { success: false, error: "No active session — navigate to a page first with strategy='chromium' or 'stealth'" };
+  if (!sr) return { success: false, error: "No active session — use browser-navigate to visit a page first, then retry" };
   return refBasedInteractionOrSnapshot(tid, sr.wasAutoEscalated, async () => {
     if (sr.session.level === "chromium") return compactInteractionResult(await playwrightBackend.type(tid, ref, text));
     if (sr.session.level === "stealth") return compactInteractionResult(await stealthBackend.type(tid, ref, text));
@@ -468,7 +494,7 @@ export async function type(taskId: string | undefined, ref: string, text: string
 export async function scroll(taskId: string | undefined, direction: "up" | "down"): Promise<InteractionResult> {
   const tid = taskId ?? "default";
   const sr = await requireInteractiveSession(tid);
-  if (!sr) return { success: false, error: "No active session — navigate to a page first with strategy='chromium' or 'stealth'" };
+  if (!sr) return { success: false, error: "No active session — use browser-navigate to visit a page first, then retry" };
   return refBasedInteractionOrSnapshot(tid, sr.wasAutoEscalated, async () => {
     if (sr.session.level === "chromium") return compactInteractionResult(await playwrightBackend.scroll(tid, direction));
     if (sr.session.level === "stealth") return compactInteractionResult(await stealthBackend.scroll(tid, direction));
@@ -481,7 +507,7 @@ export async function scroll(taskId: string | undefined, direction: "up" | "down
 export async function screenshot(taskId?: string, fullPage?: boolean): Promise<ScreenshotResult> {
   const tid = taskId ?? "default";
   const sr = await requireInteractiveSession(tid);
-  if (!sr) return { success: false, dataUri: "", error: "No active session" };
+  if (!sr) return { success: false, dataUri: "", error: "No active session — use browser-navigate to visit a page first, then retry" };
   if (sr.session.level === "chromium") return playwrightBackend.screenshot(tid, fullPage ?? false);
   if (sr.session.level === "stealth") return stealthBackend.screenshot(tid);
   return { success: false, dataUri: "", error: "Unknown session level" };
@@ -492,7 +518,7 @@ export async function screenshot(taskId?: string, fullPage?: boolean): Promise<S
 export async function goBack(taskId?: string): Promise<InteractionResult> {
   const tid = taskId ?? "default";
   const sr = await requireInteractiveSession(tid);
-  if (!sr) return { success: false, error: "No active session" };
+  if (!sr) return { success: false, error: "No active session — use browser-navigate to visit a page first, then retry" };
   return refBasedInteractionOrSnapshot(tid, sr.wasAutoEscalated, async () => {
     if (sr.session.level === "chromium") return compactInteractionResult(await playwrightBackend.goBack(tid));
     if (sr.session.level === "stealth") return compactInteractionResult(await stealthBackend.goBack(tid));
@@ -505,7 +531,7 @@ export async function goBack(taskId?: string): Promise<InteractionResult> {
 export async function press(taskId: string | undefined, key: string): Promise<InteractionResult> {
   const tid = taskId ?? "default";
   const sr = await requireInteractiveSession(tid);
-  if (!sr) return { success: false, error: "No active session" };
+  if (!sr) return { success: false, error: "No active session — use browser-navigate to visit a page first, then retry" };
   return refBasedInteractionOrSnapshot(tid, sr.wasAutoEscalated, async () => {
     if (sr.session.level === "chromium") return compactInteractionResult(await playwrightBackend.press(tid, key));
     if (sr.session.level === "stealth") return compactInteractionResult(await stealthBackend.press(tid, key));
@@ -525,7 +551,7 @@ export interface GetImagesResult {
 export async function getImages(taskId?: string): Promise<GetImagesResult> {
   const tid = taskId ?? "default";
   const sr = await requireInteractiveSession(tid);
-  if (!sr) return { success: false, images: [], count: 0, error: "No active session" };
+  if (!sr) return { success: false, images: [], count: 0, error: "No active session — use browser-navigate to visit a page first, then retry" };
   if (sr.session.level === "chromium") {
     const result = await playwrightBackend.getImages(tid);
     return { success: result.success, images: result.images, count: result.images.length, error: result.error };
@@ -542,7 +568,7 @@ export async function getImages(taskId?: string): Promise<GetImagesResult> {
 export async function getConsoleMessages(taskId?: string): Promise<{ success: boolean; messages: Array<{ type: string; text: string }>; error?: string }> {
   const tid = taskId ?? "default";
   const sr = await requireInteractiveSession(tid);
-  if (!sr) return { success: false, messages: [], error: "No active session" };
+  if (!sr) return { success: false, messages: [], error: "No active session — use browser-navigate to visit a page first, then retry" };
   if (sr.session.level === "chromium") {
     const msgs = await playwrightBackend.getConsoleMessages(tid);
     return { success: true, messages: msgs };
@@ -557,7 +583,7 @@ export async function getConsoleMessages(taskId?: string): Promise<{ success: bo
 export async function evaluate(taskId: string | undefined, expression: string): Promise<{ success: boolean; result?: unknown; error?: string }> {
   const tid = taskId ?? "default";
   const sr = await requireInteractiveSession(tid);
-  if (!sr) return { success: false, error: "No active session" };
+  if (!sr) return { success: false, error: "No active session — use browser-navigate to visit a page first, then retry" };
   if (sr.session.level === "chromium") return playwrightBackend.evaluate(tid, expression);
   if (sr.session.level === "stealth") return stealthBackend.evaluate(tid, expression);
   return { success: false, error: "Unknown session level" };

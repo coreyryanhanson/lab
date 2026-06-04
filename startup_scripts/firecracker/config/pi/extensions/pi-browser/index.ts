@@ -3,6 +3,8 @@ import { Type, StringEnum } from "@earendil-works/pi-ai";
 import { Text } from "@earendil-works/pi-tui";
 import { accessSync, constants } from "node:fs";
 import * as router from "./backend/router";
+import { cleanupAll as cleanupPlaywright } from "./backend/playwright-backend";
+import { cleanupAll as cleanupStealth } from "./backend/stealth-backend";
 import { sessionManager } from "./utils/session-manager";
 
 // ============================================================
@@ -645,9 +647,24 @@ const browserConsoleTool = defineTool({
         };
       }
 
-      const formatted = typeof result.result === "string" ? result.result : JSON.stringify(result.result, null, 2);
+      let formatted: string;
+      if (typeof result.result === "string") {
+        formatted = result.result;
+      } else if (result.result === undefined || result.result === null) {
+        formatted = String(result.result);
+      } else {
+        try {
+          formatted = JSON.stringify(result.result, null, 2);
+        } catch {
+          formatted = String(result.result);
+        }
+      }
+      const TRUNCATE_LIMIT = 10_000;
+      if (formatted.length > TRUNCATE_LIMIT) {
+        formatted = formatted.slice(0, TRUNCATE_LIMIT) + `\n… (truncated, ${formatted.length - TRUNCATE_LIMIT} more chars)`;
+      }
       return {
-        content: [{ type: "text", text: formatted ?? "undefined" }],
+        content: [{ type: "text", text: formatted || "undefined" }],
         details: { result: result.result },
       };
     }
@@ -762,8 +779,8 @@ export default function (pi: ExtensionAPI) {
     const piSessionId = (ctx as any)?.sessionManager?.getSessionId?.();
     if (piSessionId) _sessionKeys.delete(piSessionId);
 
-    await import("./backend/playwright-backend").then(m => m.cleanupAll()).catch(() => {});
-    await import("./backend/stealth-backend").then(m => m.cleanupAll()).catch(() => {});
+    await cleanupPlaywright().catch(() => {});
+    await cleanupStealth().catch(() => {});
     await sessionManager.removeAll();
     try {
       ctx?.ui?.setStatus?.("browser", "");

@@ -86,13 +86,25 @@ class StealthBridge {
   requestId = 0;
   pending = new Map<number, PendingCall>();
   initialized = false;
+  /** Task ID this bridge belongs to (stored for auto-reinit on crash recovery) */
+  taskId: string = "";
+  /** Promise that resolves when the bridge process is fully spawned and ready */
+  private _initPromise: Promise<void> | null = null;
 
   /**
    * Send a JSON-RPC call to this bridge process.
    * Creates the process on first use.
    */
   async call(method: string, params?: Record<string, unknown>): Promise<JsonRpcResponse> {
-    this.ensureProcess();
+    await this.ensureProcess();
+
+    // Auto-reinit if the bridge was restarted after a crash
+    if (!this.initialized && method !== "init" && method !== "shutdown") {
+      if (!this.taskId) {
+        throw new Error("Bridge not initialized — call init() first");
+      }
+      await this.init(this.taskId);
+    }
 
     const id = ++this.requestId;
     const msg: JsonRpcRequest = { id, method, params };
@@ -112,15 +124,56 @@ class StealthBridge {
     });
   }
 
-  private ensureProcess(): void {
+  private async ensureProcess(): Promise<void> {
     if (this.process && this.process.exitCode === null) return;
 
-    this.process = spawn(BRIDGE_PATH, [], {
-      stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env, PYTHONUNBUFFERED: "1" },
+    // If another call is already spawning, wait for it
+    if (this._initPromise) {
+      await this._initPromise;
+      return;
+    }
+
+    this._initPromise = new Promise<void>((resolve, reject) => {
+      this.process = spawn(BRIDGE_PATH, [], {
+        stdio: ["pipe", "pipe", "pipe"],
+        env: { ...process.env, PYTHONUNBUFFERED: "1" },
+      });
+
+      this.readline = createInterface({ input: this.process.stdout! });
+
+      // Resolve once the startup ack is received
+      const onFirstLine = (line: string) => {
+        try {
+          const resp = JSON.parse(line.trim());
+          if (resp.id === 0 && resp.result && (resp.result as any)?.ready) {
+            this.readline?.removeListener("line", onFirstLine);
+            resolve();
+          }
+        } catch {
+          // Not the ack yet — keep waiting
+        }
+      };
+      this.readline.on("line", onFirstLine);
+
+      // Error handling
+      this.process.on("error", (err) => {
+        this._initPromise = null;
+        reject(err);
+      });
+
+      this.process.on("exit", (code) => {
+        if (code !== 0 && !this.initialized) {
+          this._initPromise = null;
+          reject(new Error(`Bridge process exited with code ${code} during startup`));
+        }
+      });
     });
 
-    this.readline = createInterface({ input: this.process.stdout! });
+    try {
+      await this._initPromise;
+    } finally {
+      this._initPromise = null;
+    }
 
     this.readline.on("line", (line: string) => {
       try {
@@ -157,7 +210,8 @@ class StealthBridge {
 
   async init(taskId: string): Promise<void> {
     if (this.initialized) return;
-    this.ensureProcess();
+    this.taskId = taskId;
+    await this.ensureProcess();
     const resp = await this.call("init", { seed: generateSeedFromTaskId(taskId) });
     if (resp.error) throw new Error(`Bridge init failed: ${resp.error}`);
     this.initialized = true;
@@ -323,14 +377,25 @@ export async function click(
     if (resp.error) return { success: false, error: resp.error };
 
     const r = resp.result as { url?: string; title?: string };
-    sessionManager.updateSession(taskId, { currentUrl: r.url, currentTitle: r.title });
+    if (r.url) {
+      sessionManager.updateSession(taskId, {
+        currentUrl: r.url,
+        ...(r.title ? { currentTitle: r.title } : {}),
+      });
+    }
 
     // Auto-snapshot after click so the model sees updated page state
     const snapResp = await bridge.call("snapshot");
     const snapRaw = (snapResp.result as { snapshot: string })?.snapshot || "";
     const { text: snapshotText, count: elementCount } = cacheSnapshot(taskId, snapRaw);
 
-    return { success: true, newUrl: r.url, newTitle: r.title, snapshot: snapshotText, elementCount };
+    return {
+      success: true,
+      snapshot: snapshotText,
+      elementCount,
+      ...(r.url ? { newUrl: r.url } : {}),
+      ...(r.title ? { newTitle: r.title } : {}),
+    };
   } catch (err: unknown) {
     return { success: false, error: err instanceof Error ? err.message : String(err) };
   }
@@ -401,12 +466,25 @@ export async function goBack(taskId: string): Promise<StealthInteractionResult> 
     if (resp.error) return { success: false, error: resp.error };
     const r = resp.result as { url?: string; title?: string };
 
+    if (r.url) {
+      sessionManager.updateSession(taskId, {
+        currentUrl: r.url,
+        ...(r.title ? { currentTitle: r.title } : {}),
+      });
+    }
+
     // Auto-snapshot after goBack so the model sees the previous page
     const snapResp = await bridge.call("snapshot");
     const snapRaw = (snapResp.result as { snapshot: string })?.snapshot || "";
     const { text: snapshotText, count: elementCount } = cacheSnapshot(taskId, snapRaw);
 
-    return { success: true, newUrl: r.url, newTitle: r.title, snapshot: snapshotText, elementCount };
+    return {
+      success: true,
+      snapshot: snapshotText,
+      elementCount,
+      ...(r.url ? { newUrl: r.url } : {}),
+      ...(r.title ? { newTitle: r.title } : {}),
+    };
   } catch (err: unknown) {
     return { success: false, error: err instanceof Error ? err.message : String(err) };
   }
@@ -418,12 +496,28 @@ export async function press(taskId: string, key: string): Promise<StealthInterac
     const resp = await bridge.call("press", { key });
     if (resp.error) return { success: false, error: resp.error };
 
-    // Auto-snapshot after press so the model sees updated page state
+    const r = resp.result as { url?: string; title?: string };
+    if (r.url) {
+      sessionManager.updateSession(taskId, {
+        currentUrl: r.url,
+        ...(r.title ? { currentTitle: r.title } : {}),
+      });
+    }
+
+    // Auto-snapshot after press so the model sees updated page state.
+    // If the press triggered a navigation (e.g. Enter on a form), the bridge
+    // already waited for networkidle, so this snapshot captures the new page.
     const snapResp = await bridge.call("snapshot");
     const snapRaw = (snapResp.result as { snapshot: string })?.snapshot || "";
     const { text: snapshotText, count: elementCount } = cacheSnapshot(taskId, snapRaw);
 
-    return { success: true, snapshot: snapshotText, elementCount };
+    return {
+      success: true,
+      snapshot: snapshotText,
+      elementCount,
+      ...(r.url ? { newUrl: r.url } : {}),
+      ...(r.title ? { newTitle: r.title } : {}),
+    };
   } catch (err: unknown) {
     return { success: false, error: err instanceof Error ? err.message : String(err) };
   }
@@ -452,13 +546,23 @@ export async function getImages(taskId: string): Promise<{ success: boolean; ima
 }
 
 export async function getConsoleMessages(taskId: string): Promise<Array<{ type: string; text: string }>> {
-  // Console capture in stealth backend would require Python-side event listeners.
-  // For now, return empty — most stealth use cases don't need console output.
-  return [];
+  try {
+    const bridge = getBridge(taskId);
+    const resp = await bridge.call("getConsoleMessages");
+    if (resp.error) return [];
+    return ((resp.result as { messages?: Array<{ type: string; text: string }> }).messages) ?? [];
+  } catch {
+    return [];
+  }
 }
 
 export async function clearConsole(taskId: string): Promise<void> {
-  // No-op for now; console capture not yet implemented in stealth bridge.
+  try {
+    const bridge = getBridge(taskId);
+    await bridge.call("clearConsole");
+  } catch {
+    // Silently ignore — console clearing is best-effort
+  }
 }
 
 export async function evaluate(taskId: string, expression: string): Promise<{ success: boolean; result?: unknown; error?: string }> {

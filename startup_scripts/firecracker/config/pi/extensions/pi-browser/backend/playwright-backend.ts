@@ -6,9 +6,9 @@
  */
 
 import { chromium } from "playwright";
-import type { Browser, BrowserContext, Page } from "playwright";
+import type { Browser, BrowserContext, Page, Response } from "playwright";
 import { parseSnapshot, buildLocator, type AriaCachedNode } from "../utils/accessibility-tree";
-import { installDialogHandlers, formatDialogLog, formatConsoleLog, getConsoleLog as getRawConsoleLog, clearConsoleLog, clearAllLogs } from "../utils/cdp-supervisor";
+import { installDialogHandlers, formatDialogLog, getConsoleLog as getRawConsoleLog, clearConsoleLog, clearAllLogs } from "../utils/cdp-supervisor";
 import { sessionManager } from "../utils/session-manager";
 
 // ─── Types ────────────────────────────────────────────────────────────
@@ -107,8 +107,9 @@ async function _getOrCreateContext(
     _browser.on("disconnected", () => {
       _browser = null;
       sessionManager.setPlaywrightBrowser(null);
-      // Clear all contexts since they're invalid now
+      // Mark all sessions as crashed before clearing
       for (const [tid] of _contexts) {
+        sessionManager.updateSession(tid, { crashed: true });
         _elementCache.delete(tid);
       }
       _contexts.clear();
@@ -172,17 +173,46 @@ export async function navigate(
       );
     }
 
-    // Navigate
-    const response = await page.goto(url, {
-      waitUntil: "networkidle",
-      timeout: timeoutMs,
-    });
+    // Navigate (with one retry for transient network errors)
+    let response: Response | null = null;
+    let lastError: string | undefined;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        response = await page.goto(url, {
+          waitUntil: "networkidle",
+          timeout: timeoutMs,
+        });
+        break; // success
+      } catch (gotoErr: unknown) {
+        lastError = gotoErr instanceof Error ? gotoErr.message : String(gotoErr);
+        const isTransient = /net::ERR_|ECONNRESET|ECONNREFUSED|ETIMEDOUT|timeout|Interrupted/i.test(lastError);
+        if (!isTransient || attempt > 0) {
+          // Not transient or already retried — throw to outer catch
+          throw gotoErr;
+        }
+        // Brief pause before retry
+        await page.waitForTimeout(2000);
+      }
+    }
 
     // Check for bot detection (Cloudflare, etc.)
     const botDetected = await checkBotDetection(page);
 
-    // Wait a moment for dynamic content to settle
-    await page.waitForTimeout(500);
+    // Wait for dynamic content to settle: DOM stabilization + generous timeout
+    await page.waitForLoadState("domcontentloaded");
+    try {
+      await page.waitForFunction(
+        () => new Promise<boolean>((resolve) => {
+          const count = document.querySelectorAll("*").length;
+          setTimeout(() => {
+            resolve(document.querySelectorAll("*").length === count || count > 5000);
+          }, 400);
+        }),
+        { timeout: 5000 },
+      );
+    } catch {
+      // Stabilization timed out — proceed with whatever is rendered
+    }
 
     // Take accessibility snapshot
     const snap = await page.ariaSnapshot();
@@ -585,7 +615,7 @@ export async function evaluate(
   }
 
   try {
-    const result = await page.evaluate((expr: string) => eval(expr), expression);
+    const result = await page.evaluate(expression);
     return { success: true, result };
   } catch (err: unknown) {
     return {

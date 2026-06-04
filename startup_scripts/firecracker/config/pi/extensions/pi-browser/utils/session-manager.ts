@@ -123,9 +123,11 @@ class SessionManager {
 
   getStatus(): string {
     const active = this.getActiveSessions();
+    const crashed = Array.from(this.#sessions.values()).filter((s) => s.crashed);
+
     if (active.length === 0) {
-      for (const [, s] of this.#sessions) {
-        if (s.crashed) return `💥 ${s.level} crashed`;
+      if (crashed.length > 0) {
+        return `💥 ${crashed.length} session${crashed.length > 1 ? "s" : ""} crashed`;
       }
       return "🌐 idle";
     }
@@ -133,11 +135,19 @@ class SessionManager {
       const s = active[0];
       const domain = s.currentUrl ? extractDomain(s.currentUrl) : undefined;
       const sym = levelToSymbol(s.level);
-      return domain ? `▶ ${sym}: ${domain}` : `▶ ${sym}`;
+      let status = domain ? `▶ ${sym}: ${domain}` : `▶ ${sym}`;
+      if (crashed.length > 0) {
+        status += ` · ${crashed.length} crashed`;
+      }
+      return status;
     }
     const levels = new Set(active.map((s) => s.level));
     const levelStr = Array.from(levels).map(levelToSymbol).join(",");
-    return `🌐 ${active.length} active (${levelStr})`;
+    let status = `🌐 ${active.length} active (${levelStr})`;
+    if (crashed.length > 0) {
+      status += ` · ${crashed.length} crashed`;
+    }
+    return status;
   }
 
   getActiveSessions(): BrowserSession[] {
