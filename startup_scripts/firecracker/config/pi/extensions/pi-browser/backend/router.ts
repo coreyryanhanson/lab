@@ -294,16 +294,36 @@ export async function snapshot(taskId?: string, full?: boolean): Promise<Snapsho
 /**
  * Truncate a snapshot to a compact view (~2500 chars) that still shows
  * the key structure. Appends a hint to use full=true for the complete tree.
+ *
+ * For very large snapshots (>8000 chars), preserves the first ~2000 chars
+ * of structural content (top of the tree including headings/landmarks)
+ * plus a structural summary showing what was cut.
  */
 function compactSnapshot(snapshot: string, elementCount: number): string {
   if (snapshot.length <= 2800) return snapshot;
 
-  // Try to cut at a newline near the limit
   const limit = 2500;
-  let cut = snapshot.lastIndexOf("\n", limit);
-  if (cut < limit / 2) cut = limit; // fallback: cut at limit if no newline nearby
-
   const remaining = elementCount > 0 ? elementCount : undefined;
+
+  // For very large pages (>8000 chars), try to preserve the top of the tree
+  // which typically contains page structure (banner, navigation, headings).
+  if (snapshot.length > 8000) {
+    // Keep first ~2000 chars of the tree top (usually page structure)
+    const topLimit = 2000;
+    let topCut = snapshot.lastIndexOf("\n", topLimit);
+    if (topCut < topLimit / 2) topCut = topLimit;
+
+    const topSection = snapshot.slice(0, topCut);
+    const bottomHint = remaining
+      ? `\n… ${snapshot.length - topCut} more chars, ${remaining} elements total (use full=true for complete tree)`
+      : `\n… ${snapshot.length - topCut} more chars (use full=true for complete tree)`;
+    return topSection + bottomHint;
+  }
+
+  // Moderate-sized pages: cut at a natural breakpoint near the limit
+  let cut = snapshot.lastIndexOf("\n", limit);
+  if (cut < limit / 2) cut = limit;
+
   const tail = remaining
     ? `\n… ${snapshot.length - cut} more chars, ${remaining} elements total (use full=true for complete tree)`
     : `\n… ${snapshot.length - cut} more chars (use full=true for complete tree)`;
@@ -393,6 +413,30 @@ export async function press(taskId: string | undefined, key: string): Promise<In
   else if (session.level === "stealth") result = await stealthBackend.press(tid, key);
   else return { success: false, error: `Key press requires an interactive browser. Session is on ${session.level}.` };
   return compactInteractionResult(result);
+}
+
+// ─── Images ────────────────────────────────────────────────────────────
+
+export interface GetImagesResult {
+  success: boolean;
+  images: Array<{ src: string; alt: string; width: number; height: number }>;
+  count: number;
+  error?: string;
+}
+
+export async function getImages(taskId?: string): Promise<GetImagesResult> {
+  const tid = taskId ?? "default";
+  const session = sessionManager.getSession(tid);
+  if (!session) return { success: false, images: [], count: 0, error: "No active session" };
+  if (session.level === "chromium") {
+    const result = await playwrightBackend.getImages(tid);
+    return { success: result.success, images: result.images, count: result.images.length, error: result.error };
+  }
+  if (session.level === "stealth") {
+    const result = await stealthBackend.getImages(tid);
+    return { success: result.success, images: result.images, count: result.images.length, error: result.error };
+  }
+  return { success: false, images: [], count: 0, error: `Images require an interactive browser. Session is on ${session.level}.` };
 }
 
 // ─── Console & Eval ──────────────────────────────────────────────────

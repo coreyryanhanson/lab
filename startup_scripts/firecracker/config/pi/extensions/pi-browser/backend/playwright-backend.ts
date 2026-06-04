@@ -509,6 +509,48 @@ async function takeSnapshot(taskId: string, page: Page): Promise<{ snapshot: str
   }
 }
 
+// ─── Images ────────────────────────────────────────────────────────────
+
+export interface PlaywrightImageInfo {
+  src: string;
+  alt: string;
+  width: number;
+  height: number;
+}
+
+/**
+ * Extract all <img> tags from the page.
+ * Returns src, alt, width, height for each image.
+ * Excludes data URIs.
+ */
+export async function getImages(taskId: string): Promise<{ success: boolean; images: PlaywrightImageInfo[]; error?: string }> {
+  const page = getPage(taskId);
+  if (!page) {
+    return { success: false, images: [], error: "No active session" };
+  }
+
+  try {
+    const images = await page.evaluate(() => {
+      return Array.from(document.querySelectorAll("img"))
+        .map((img) => ({
+          src: img.src,
+          alt: img.alt || "",
+          width: img.naturalWidth || img.width || 0,
+          height: img.naturalHeight || img.height || 0,
+        }))
+        .filter((img) => !img.src.startsWith("data:"));
+    });
+
+    return { success: true, images };
+  } catch (err: unknown) {
+    return {
+      success: false,
+      images: [],
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
 // ─── Console ───────────────────────────────────────────────────────────
 
 /**

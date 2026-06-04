@@ -408,21 +408,91 @@ const browserScreenshotTool = defineTool({
       };
     }
 
+    // Build content: if a question was provided, include it in the text output
+    // so both vision and text-only models can work with it.
+    // The image is always attached for vision-capable models.
+    const textContent = p?.question
+      ? `Screenshot captured. Question: ${p.question}`
+      : "Screenshot captured:";
+
     return {
       content: [
-        { type: "text", text: "Screenshot captured:" },
+        { type: "text", text: textContent },
         { type: "image", source: { type: "base64", mediaType: "image/png", data: result.dataUri.replace("data:image/png;base64,", "") } },
       ],
-      details: { screenshot: true },
+      details: { screenshot: true, question: p?.question },
+    };
+  },
+
+  renderCall(args, theme, _context) {
+    if (args.question) {
+      return new Text(`${theme.fg("toolTitle", theme.bold("browser-screenshot"))} ${theme.fg("dim", `“${args.question.slice(0, 60)}”`)}`, 0, 0);
+    }
+    return new Text(theme.fg("toolTitle", theme.bold("browser-screenshot")), 0, 0);
+  },
+
+  renderResult(result, _options, theme, _context) {
+    const d = result.details as Record<string, unknown> | undefined;
+    if (d?.question) {
+      return new Text(`${theme.fg("accent", "📸 Screenshot")} ${theme.fg("dim", `“${(d.question as string).slice(0, 60)}”`)}`, 0, 0);
+    }
+    return new Text(theme.fg("accent", "📸 Screenshot captured"), 0, 0);
+  },
+});
+
+// ============================================================
+// Tool: browser-get-images
+// ============================================================
+const browserGetImagesTool = defineTool({
+  name: "browser-get-images",
+  label: "Get Page Images",
+  description:
+    "Extract all <img> tags from the current page with src, alt, dimensions. " +
+    "Useful for understanding visual content structure without taking a full screenshot. " +
+    "Excludes data URIs.",
+  parameters: Type.Object({
+    taskId: Type.Optional(Type.String({ description: "Session ID (auto-populated)" })),
+  }),
+
+  async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+    const { taskId: tid } = params as { taskId?: string };
+    const result = await router.getImages(tid ?? taskId(ctx));
+
+    if (!result.success) {
+      return {
+        content: [{ type: "text", text: `Failed to get images: ${result.error ?? "unknown"}` }],
+        details: { error: true },
+      };
+    }
+
+    if (result.count === 0) {
+      return {
+        content: [{ type: "text", text: "No images found on this page." }],
+        details: { count: 0 },
+      };
+    }
+
+    const lines = [`Found ${result.count} image(s):`, ""];
+    for (const img of result.images) {
+      lines.push(`- ${img.alt ? `"${img.alt}" ` : ""}${img.src} (${img.width}x${img.height})`);
+    }
+
+    return {
+      content: [{ type: "text", text: lines.join("\n") }],
+      details: { count: result.count, images: result.images },
     };
   },
 
   renderCall(_args, theme, _context) {
-    return new Text(theme.fg("toolTitle", theme.bold("browser-screenshot")), 0, 0);
+    return new Text(theme.fg("toolTitle", theme.bold("browser-get-images")), 0, 0);
   },
 
-  renderResult(_result, _options, theme, _context) {
-    return new Text(theme.fg("accent", "📸 Screenshot captured"), 0, 0);
+  renderResult(result, _options, theme, _context) {
+    const d = result.details as Record<string, unknown> | undefined;
+    if (d?.error) return new Text(theme.fg("error", "Failed to get images"), 0, 0);
+    const count = (d?.count as number) ?? 0;
+    if (count === 0) return new Text(theme.fg("dim", "No images"), 0, 0);
+    return new Text(theme.fg("accent", `🖼 ${count} image(s)`), 0, 0);
   },
 });
 
@@ -666,6 +736,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool(browserTypeTool);
   pi.registerTool(browserScrollTool);
   pi.registerTool(browserScreenshotTool);
+  pi.registerTool(browserGetImagesTool);
   pi.registerTool(browserBackTool);
   pi.registerTool(browserPressTool);
   pi.registerTool(browserConsoleTool);

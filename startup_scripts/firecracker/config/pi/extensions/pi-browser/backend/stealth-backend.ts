@@ -429,6 +429,28 @@ export async function press(taskId: string, key: string): Promise<StealthInterac
   }
 }
 
+export async function getImages(taskId: string): Promise<{ success: boolean; images: Array<{ src: string; alt: string; width: number; height: number }>; error?: string }> {
+  try {
+    const bridge = getBridge(taskId);
+    const expression = `
+      Array.from(document.querySelectorAll("img"))
+        .map(img => ({
+          src: img.src,
+          alt: img.alt || "",
+          width: img.naturalWidth || img.width || 0,
+          height: img.naturalHeight || img.height || 0
+        }))
+        .filter(img => !img.src.startsWith("data:"))
+    `;
+    const resp = await bridge.call("evaluate", { expression });
+    if (resp.error) return { success: false, images: [], error: resp.error };
+    const images = (resp.result as { result?: Array<{ src: string; alt: string; width: number; height: number }> }).result ?? [];
+    return { success: true, images };
+  } catch (err: unknown) {
+    return { success: false, images: [], error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 export async function getConsoleMessages(taskId: string): Promise<Array<{ type: string; text: string }>> {
   // Console capture in stealth backend would require Python-side event listeners.
   // For now, return empty — most stealth use cases don't need console output.
