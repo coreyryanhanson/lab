@@ -48,6 +48,8 @@ const browserNavigateTool = defineTool({
     "The tool converts HTML to Markdown for readability.",
     "If the page seems empty or JS-dependent, try strategy='chromium' when the Playwright backend is available.",
     "Use @e1, @e2 references from the accessibility tree with browser-click and browser-type to interact with page elements.",
+    "If snapshot or interaction returns 'No active session', the page was fetched via HTTP. Calling browser-snapshot now will auto-launch an interactive browser and navigate to the last URL.",
+    "After auto-launch, @e refs may have changed — a fresh accessibility tree is returned automatically. Use the new refs for interaction.",
   ],
   parameters: Type.Object({
     url: Type.String({ description: "The URL to navigate to" }),
@@ -415,10 +417,14 @@ const browserScreenshotTool = defineTool({
       ? `Screenshot captured. Question: ${p.question}`
       : "Screenshot captured:";
 
+    // Derive media type from data URI (backends return JPEG at 80% quality)
+    const mediaType = result.dataUri.startsWith("data:image/jpeg") ? "image/jpeg" : "image/png";
+    const base64Data = result.dataUri.replace(/^data:image\/\w+;base64,/, "");
+
     return {
       content: [
         { type: "text", text: textContent },
-        { type: "image", source: { type: "base64", mediaType: "image/png", data: result.dataUri.replace("data:image/png;base64,", "") } },
+        { type: "image", source: { type: "base64", mediaType, data: base64Data } },
       ],
       details: { screenshot: true, question: p?.question },
     };

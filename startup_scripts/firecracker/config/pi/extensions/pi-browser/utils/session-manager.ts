@@ -9,7 +9,7 @@
 import type { Browser, BrowserContext } from "playwright";
 
 /** Which backend level a session is currently using */
-export type BackendLevel = "fetch" | "chromium" | "stealth";
+export type BackendLevel = "chromium" | "stealth";
 
 /** Runtime state of a single browsing session */
 export interface BrowserSession {
@@ -29,10 +29,18 @@ export interface BrowserSession {
   processHandle?: unknown;
 }
 
+/** Stored last navigation for a task (used to auto-escalate fetch→interactive) */
+interface LastNavEntry {
+  url: string;
+  title: string;
+}
+
 class SessionManager {
   #sessions = new Map<string, BrowserSession>();
   #playwrightBrowser: Browser | null = null;
   #stealthProcess: unknown = null;
+  /** Last navigation URL per task (survives session removal, cleared explicitly) */
+  #lastNav = new Map<string, LastNavEntry>();
 
   createSession(taskId: string, level: BackendLevel): BrowserSession {
     const existing = this.#sessions.get(taskId);
@@ -72,12 +80,29 @@ class SessionManager {
     }
   }
 
+  // ─── Last navigation storage (for fetch→interactive auto-escalation) ───
+
+  setLastNav(taskId: string, url: string, title: string): void {
+    this.#lastNav.set(taskId, { url, title });
+  }
+
+  getLastNav(taskId: string): { url: string; title: string } | undefined {
+    return this.#lastNav.get(taskId);
+  }
+
+  clearLastNav(taskId: string): void {
+    this.#lastNav.delete(taskId);
+  }
+
+  // ─── Session lifecycle ────────────────────────────────────────────────
+
   removeSession(taskId: string): void {
     const session = this.#sessions.get(taskId);
     if (session?.context) {
       session.context.close().catch(() => {});
     }
     this.#sessions.delete(taskId);
+    this.#lastNav.delete(taskId);
   }
 
   async removeAll(): Promise<void> {
@@ -89,6 +114,7 @@ class SessionManager {
     }
     await Promise.all(closePromises);
     this.#sessions.clear();
+    this.#lastNav.clear();
     if (this.#playwrightBrowser) {
       try { await this.#playwrightBrowser.close(); } catch { /* ok */ }
       this.#playwrightBrowser = null;
@@ -134,7 +160,6 @@ function extractDomain(url: string): string {
 
 function levelToSymbol(level: BackendLevel): string {
   switch (level) {
-    case "fetch": return "HTML";
     case "chromium": return "PW";
     case "stealth": return "IPW";
   }
