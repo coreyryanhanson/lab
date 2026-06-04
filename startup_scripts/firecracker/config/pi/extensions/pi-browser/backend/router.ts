@@ -146,7 +146,7 @@ export async function navigate(
 
       // Bot detected on successful load — try stealth escalation
       if (result.botDetected && strategy === "auto") {
-        session.updateSession(taskId, { level: "stealth" });
+        sessionManager.updateSession(taskId, { level: "stealth" });
         const stealthResult = await stealthBackend.navigate(result.url, taskId, timeoutMs);
         if (stealthResult.success) {
           return {
@@ -174,7 +174,7 @@ export async function navigate(
 
     // Playwright failed — escalate to Level 3 (stealth) if auto
     if (result.botDetected && strategy === "auto") {
-      session.updateSession(taskId, { level: "stealth" });
+      sessionManager.updateSession(taskId, { level: "stealth" });
       const stealthResult = await stealthBackend.navigate(result.url, taskId, timeoutMs);
       if (stealthResult.success) {
         return {

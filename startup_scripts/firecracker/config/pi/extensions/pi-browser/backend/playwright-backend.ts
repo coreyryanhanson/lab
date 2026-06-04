@@ -478,7 +478,7 @@ export async function evaluate(
   }
 
   try {
-    const result = await page.evaluate(expression);
+    const result = await page.evaluate((expr: string) => eval(expr), expression);
     return { success: true, result };
   } catch (err: unknown) {
     return {

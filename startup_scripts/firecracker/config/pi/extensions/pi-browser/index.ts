@@ -11,9 +11,23 @@ function updateFooterStatus(ctx: { ui: { setStatus: (key: string, label: string)
   ctx.ui.setStatus("browser", sessionManager.getStatus());
 }
 
-// ─── Helper to get taskId from tool call context ────────────
-function taskId(ctx: { toolCallId?: string }): string {
-  return ctx?.toolCallId ?? "default";
+// ─── Helper to get a stable taskId from tool call context ──────
+// Each pi session gets one browser session (not one per tool call).
+// ctx.sessionManager.getSessionId() provides a stable per-session key.
+// Fallback to a single shared key if unavailable.
+const _sessionKeys = new Map<string, string>(); // pi sessionId → browser taskId
+let _sessionCounter = 0;
+
+function taskId(ctx: { toolCallId?: string; sessionManager?: { getSessionId?: () => string } }): string {
+  const piSessionId = ctx?.sessionManager?.getSessionId?.();
+  if (piSessionId) {
+    if (!_sessionKeys.has(piSessionId)) {
+      _sessionKeys.set(piSessionId, `browser-${++_sessionCounter}`);
+    }
+    return _sessionKeys.get(piSessionId)!;
+  }
+  // Fallback: single shared session (better than per-toolCallId)
+  return "browser-default";
 }
 
 // ============================================================
@@ -551,6 +565,10 @@ export default function (pi: ExtensionAPI) {
 
   // --- Cleanup --------------------------------------------------
   pi.on("session_shutdown", async (_event, ctx) => {
+    // Clean up the stable session key for this pi session
+    const piSessionId = (ctx as any)?.sessionManager?.getSessionId?.();
+    if (piSessionId) _sessionKeys.delete(piSessionId);
+
     await import("./backend/playwright-backend").then(m => m.cleanupAll()).catch(() => {});
     await import("./backend/stealth-backend").then(m => m.cleanupAll()).catch(() => {});
     await sessionManager.removeAll();
