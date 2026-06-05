@@ -540,23 +540,22 @@ sudo chroot "$ROOTFS_DIR" /bin/bash -c '
         cp -a /tmp/invisible_playwright_src /opt/invisible_playwright_src
         VIRTUAL_ENV=/opt/ipw-pyenv \
         /usr/local/bin/uv pip install -e /opt/invisible_playwright_src
-    else
-        echo "ERROR: invisible_playwright source not found at /tmp/invisible_playwright_src"
-        exit 1
-    fi
 
-    # Extract cached Firefox binary instead of fetching from GitHub Releases
-    if [ -f /tmp/firefox-7-patched.tar.gz ]; then
-        mkdir -p /root/.cache/invisible-playwright
-        tar xzf /tmp/firefox-7-patched.tar.gz -C /root/.cache/invisible-playwright/
-    else
-        echo "WARNING: firefox-7-patched.tar.gz not found in chroot tmp dir, attempting fetch from GitHub..."
-        VIRTUAL_ENV=/opt/ipw-pyenv \
-        /opt/ipw-pyenv/bin/python -m invisible_playwright fetch
-    fi
+        # Extract cached Firefox binary instead of fetching from GitHub Releases
+        if [ -f /tmp/firefox-7-patched.tar.gz ]; then
+            mkdir -p /root/.cache/invisible-playwright
+            tar xzf /tmp/firefox-7-patched.tar.gz -C /root/.cache/invisible-playwright/
+        else
+            echo "WARNING: firefox-7-patched.tar.gz not found — stealth Firefox binary will be missing"
+        fi
 
-    # CLI symlink for discoverability
-    ln -sf /opt/ipw-pyenv/bin/invisible_playwright /usr/local/bin/invisible_playwright
+        # CLI symlink for discoverability
+        ln -sf /opt/ipw-pyenv/bin/invisible_playwright /usr/local/bin/invisible_playwright
+    else
+        echo "NOTE: offline invisible_playwright source not found — skipping stealth Firefox installation"
+        echo "  The pi-browser extension will still work with Node.js Playwright/Chromium"
+        echo "  but stealth mode (Firefox) will not be available."
+    fi
 '
 
 echo "  Invisible Playwright installed"
