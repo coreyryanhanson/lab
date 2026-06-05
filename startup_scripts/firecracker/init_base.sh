@@ -522,19 +522,38 @@ sudo chroot "$ROOTFS_DIR" /bin/bash -c '
 
 echo "  Playwright + Chromium installed"
 
+# Copy offline deps into chroot filesystem before installing invisible_playwright
+OFFLINE_DEPS="/root/offline-deps"
+if [ -d "$OFFLINE_DEPS" ]; then
+    sudo cp -a "$OFFLINE_DEPS/invisible_playwright" "$ROOTFS_DIR/tmp/invisible_playwright_src"
+    if [ -f "$OFFLINE_DEPS/firefox-7-patched.tar.gz" ]; then
+        sudo cp "$OFFLINE_DEPS/firefox-7-patched.tar.gz" "$ROOTFS_DIR/tmp/"
+    fi
+fi
+
 sudo chroot "$ROOTFS_DIR" /bin/bash -c '
     # Python invisible_playwright (patched Firefox for stealth)
     uv venv /opt/ipw-pyenv
 
-    git clone --depth 1 https://github.com/feder-cr/invisible_playwright.git \
-        /opt/invisible_playwright_src
+    # Install from local source copy (offline-deps, no git clone needed)
+    if [ -d /tmp/invisible_playwright_src ]; then
+        cp -a /tmp/invisible_playwright_src /opt/invisible_playwright_src
+        VIRTUAL_ENV=/opt/ipw-pyenv \
+        /usr/local/bin/uv pip install -e /opt/invisible_playwright_src
+    else
+        echo "ERROR: invisible_playwright source not found at /tmp/invisible_playwright_src"
+        exit 1
+    fi
 
-    VIRTUAL_ENV=/opt/ipw-pyenv \
-    /usr/local/bin/uv pip install -e /opt/invisible_playwright_src
-
-    # Fetch the ~100 MB patched Firefox binary (SHA256-verified)
-    VIRTUAL_ENV=/opt/ipw-pyenv \
-    /opt/ipw-pyenv/bin/python -m invisible_playwright fetch
+    # Extract cached Firefox binary instead of fetching from GitHub Releases
+    if [ -f /tmp/firefox-7-patched.tar.gz ]; then
+        mkdir -p /root/.cache/invisible-playwright
+        tar xzf /tmp/firefox-7-patched.tar.gz -C /root/.cache/invisible-playwright/
+    else
+        echo "WARNING: firefox-7-patched.tar.gz not found in chroot tmp dir, attempting fetch from GitHub..."
+        VIRTUAL_ENV=/opt/ipw-pyenv \
+        /opt/ipw-pyenv/bin/python -m invisible_playwright fetch
+    fi
 
     # CLI symlink for discoverability
     ln -sf /opt/ipw-pyenv/bin/invisible_playwright /usr/local/bin/invisible_playwright
