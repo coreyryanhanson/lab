@@ -51,6 +51,12 @@ All commands run from `startup_scripts/firecracker/`. Most require `sudo`.
 - **searxng-search** — Web search via local SearXNG instance. Supports query, count, language, safesearch, time_range, category, engines filters. Startup health check + `/searxng-status` command.
 - **venice-ai** — Dynamically fetches and registers all Venice AI private text models as a provider. Requires `VENICE_API_KEY`.
 
+#### Pi packages (installed via `pi install`)
+
+- **pi-subagents** — Delegate work to builtin or custom subagents with single-agent, chain, parallel, async, forked-context, and intercom-coordinated workflows.
+- **rpiv-ask-user-question** — Structured multi-choice question tool for clarifying ambiguous requests.
+- **rpiv-todo** — Task list management tool for tracking multi-step progress.
+
 ### `config/opencode/` — OpenCode
 
 - `config.json` — OpenCode configuration
@@ -74,7 +80,8 @@ All commands run from `startup_scripts/firecracker/`. Most require `sudo`.
 ### `config/chroot-scripts/` — Base image build scripts
 
 - `install-nvm-node.sh` — Installs nvm, Node.js LTS, OpenCode, and creates `/etc/profile.d/nvm.sh`. Run during `init_base.sh` debootstrap.
+- Pi agent + packages are installed directly in `init_base.sh` (see "Install Pi Coding Agent" section).
 
 ## Guest software (pre-installed in base image)
 
-Python 3 + pip + uv, Node.js via nvm (LTS), OpenCode (`opencode-ai@latest` with vision tools and skills), Pi Coding Agent (`@earendil-works/pi-coding-agent` with pi-browser, opencode-zen, searxng-search, and venice-ai extensions).
+Python 3 + pip + uv, Node.js via nvm (LTS), OpenCode (`opencode-ai@latest` with vision tools and skills), Pi Coding Agent (`@earendil-works/pi-coding-agent` with pi-browser, opencode-zen, searxng-search, and venice-ai extensions), plus Pi packages: pi-subagents, rpiv-ask-user-question, rpiv-todo.
