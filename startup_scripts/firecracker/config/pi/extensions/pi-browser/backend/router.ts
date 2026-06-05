@@ -409,12 +409,21 @@ export async function navigate(
       // Page needs JS — escalate to Level 2 (fall through to Playwright)
     } else if (result.needsJavaScript) {
       // User explicitly asked for fetch, but page needs JS
+      const { inline, filePath, totalChars } = capFetchContent(result.content, taskId);
+      let content = inline + "\n\n⚠ This page appears to need JavaScript for full rendering.";
+      if (filePath) {
+        content = `📄 Full content saved to ${filePath} (${formatBytes(totalChars)}). Use read with offset/limit to access specific sections — do not read the entire file at once.\n\n${content}`;
+      }
+      const extra: Record<string, unknown> = {};
+      if (filePath) extra.filePath = filePath;
+      if (totalChars) extra.totalChars = totalChars;
       return {
         success: true, url: result.url, title: result.title,
-        content: result.content + "\n\n⚠ This page appears to need JavaScript for full rendering.",
+        content,
         backendUsed: "fetch", botDetectionWarning: true,
         statusCode: result.statusCode,
-      };
+        ...extra,
+      } as NavigateResult;
     } else {
       // Fetch failed entirely
       return {

@@ -146,6 +146,35 @@ export async function navigate(
       }
     });
 
+    // Fix 3: Compress data URI images (defense-in-depth)
+    // <img src="data:image/..."> would pass through Turndown as full inline base64.
+    root.querySelectorAll("img").forEach((el) => {
+      const src = el.getAttribute("src") || "";
+      if (src.startsWith("data:")) {
+        const alt = el.getAttribute("alt") || "image";
+        el.replaceWith(`[Image: data URI - ${alt}]`);
+      }
+    });
+
+    // Fix 2: Compress large code blocks (>500 chars of text content)
+    // Prevents documentation pages (e.g. MDN) from producing MB+ of fenced code blocks.
+    root.querySelectorAll("pre").forEach((el) => {
+      const rawText = el.textContent || "";
+      if (rawText.length > 500) {
+        // Try to extract language from nested <code> element's class attribute.
+        // node-html-parser does not parse children inside <pre> as elements,
+        // so we regex-match the inner HTML for patterns like `class="language-javascript"`.
+        let lang = "";
+        const match = (el.innerHTML || "").match(/<code[^>]*class="[^"]*\blanguage-([a-zA-Z0-9_-]+)"/);
+        if (match) {
+          lang = match[1];
+        }
+        // Count approximate line count from the raw text
+        const lineCount = rawText.split("\n").length;
+        el.replaceWith(`[${lang || "code"} code (${lineCount} lines, ~${rawText.length} chars)]`);
+      }
+    });
+
     const markdown = turndown.turndown(root.innerHTML || root.textContent || "");
 
     return {
