@@ -433,6 +433,12 @@ sudo chroot "$ROOTFS_DIR" /bin/bash -c '
     [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
     npm install -g --ignore-scripts @earendil-works/pi-coding-agent
     echo "  Pi agent installed: $(pi --version 2>/dev/null || true)"
+
+    # Install Pi packages (subagents, tools, skills)
+    pi install npm:pi-subagents
+    pi install npm:@juicesharp/rpiv-ask-user-question
+    pi install npm:@juicesharp/rpiv-todo
+    echo "  Pi packages installed: pi-subagents, rpiv-ask-user-question, rpiv-todo"
 '
 
 # ============================================================
