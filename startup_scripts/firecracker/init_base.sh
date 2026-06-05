@@ -7,7 +7,7 @@ source "${SCRIPT_DIR}/.env"
 
 # Substitute SearXNG host/port from .env into systemd service template
 sed -i "s/SEARXNG_HOST_PLACEHOLDER/${SEARXNG_HOST}/g" "${SCRIPT_DIR}/config/searxng/searxng.service"
-sed -i "s/SEARXNG_PORT_PLACEHOLDER/${SEARXNG_PORT}/g"  "${SCRIPT_DIR}/config/searxng/searxng.service"
+sed -i "s/SEARXNG_PORT_PLACEHOLDER/${SEARXNG_PORT}/g" "${SCRIPT_DIR}/config/searxng/searxng.service"
 
 ARCH="$(uname -m)"
 ROOTFS_DIR="${SCRIPT_DIR}/base/debian-trixie-rootfs"
@@ -17,11 +17,11 @@ KERNEL_DEST="${SCRIPT_DIR}/images/vmlinux-6.1.155"
 # Cleanup trap: unmount virtual filesystems on script exit or error
 # Placed here so ROOTFS_DIR is already defined (avoid unmounting host /proc)
 cleanup_mounts() {
-    local rc=$?
-    if [ -n "${ROOTFS_DIR}" ]; then
-        sudo umount "${ROOTFS_DIR}/proc" "${ROOTFS_DIR}/sys" "${ROOTFS_DIR}/dev" 2>/dev/null || true
-    fi
-    exit $rc
+	local rc=$?
+	if [ -n "${ROOTFS_DIR}" ]; then
+		sudo umount "${ROOTFS_DIR}/proc" "${ROOTFS_DIR}/sys" "${ROOTFS_DIR}/dev" 2>/dev/null || true
+	fi
+	exit $rc
 }
 trap cleanup_mounts EXIT
 
@@ -33,28 +33,28 @@ echo "========================================"
 # Download kernel
 # ============================================================
 if [ ! -f "$KERNEL_DEST" ]; then
-    echo "Downloading kernel..."
-    release_url="https://github.com/firecracker-microvm/firecracker/releases"
-    latest_version=$(basename $(curl -fsSLI -o /dev/null -w %{url_effective} ${release_url}/latest))
-    CI_VERSION=${latest_version%.*}
-    latest_kernel_key=$(curl "http://spec.ccfc.min.s3.amazonaws.com/?prefix=firecracker-ci/$CI_VERSION/$ARCH/vmlinux-&list-type=2" \
-        | grep -oP "(?<=<Key>)(firecracker-ci/$CI_VERSION/$ARCH/vmlinux-[0-9]+\.[0-9]+\.[0-9]{1,3})(?=</Key>)" \
-        | sort -V | tail -1)
+	echo "Downloading kernel..."
+	release_url="https://github.com/firecracker-microvm/firecracker/releases"
+	latest_version=$(basename $(curl -fsSLI -o /dev/null -w %{url_effective} ${release_url}/latest))
+	CI_VERSION=${latest_version%.*}
+	latest_kernel_key=$(curl "http://spec.ccfc.min.s3.amazonaws.com/?prefix=firecracker-ci/$CI_VERSION/$ARCH/vmlinux-&list-type=2" |
+		grep -oP "(?<=<Key>)(firecracker-ci/$CI_VERSION/$ARCH/vmlinux-[0-9]+\.[0-9]+\.[0-9]{1,3})(?=</Key>)" |
+		sort -V | tail -1)
 
-    wget -O "$KERNEL_DEST" "https://s3.amazonaws.com/spec.ccfc.min/${latest_kernel_key}"
+	wget -O "$KERNEL_DEST" "https://s3.amazonaws.com/spec.ccfc.min/${latest_kernel_key}"
 else
-    echo "Kernel already exists at $KERNEL_DEST"
+	echo "Kernel already exists at $KERNEL_DEST"
 fi
 
 # ============================================================
 # Create rootfs with debootstrap
 # ============================================================
 if [ ! -d "$ROOTFS_DIR" ]; then
-    echo "Running debootstrap (this takes a few minutes)..."
-    sudo apt-get install -y debootstrap
-    sudo debootstrap --arch=amd64 trixie "$ROOTFS_DIR" http://deb.debian.org/debian
+	echo "Running debootstrap (this takes a few minutes)..."
+	sudo apt-get install -y debootstrap
+	sudo debootstrap --arch=amd64 trixie "$ROOTFS_DIR" http://deb.debian.org/debian
 else
-    echo "Rootfs directory exists at $ROOTFS_DIR"
+	echo "Rootfs directory exists at $ROOTFS_DIR"
 fi
 
 # ============================================================
@@ -133,7 +133,7 @@ sudo rm -f "${ROOTFS_DIR}/tmp/install-nvm-node.sh"
 # ============================================================
 echo "Adding overlay-init script..."
 
-sudo tee "$ROOTFS_DIR/sbin/overlay-init" > /dev/null << 'OVERLAY_INIT'
+sudo tee "$ROOTFS_DIR/sbin/overlay-init" >/dev/null <<'OVERLAY_INIT'
 #!/bin/sh
 # OverlayFS init script for Firecracker
 # Requires: /overlay, /rom, /mnt directories in base rootfs
@@ -296,7 +296,7 @@ sudo mkdir -p "$ROOTFS_DIR/mnt"
 # ============================================================
 echo "Configuring network auto-setup..."
 
-sudo tee "$ROOTFS_DIR/usr/local/bin/fcnet-setup.sh" > /dev/null << 'NETSCRIPT'
+sudo tee "$ROOTFS_DIR/usr/local/bin/fcnet-setup.sh" >/dev/null <<'NETSCRIPT'
 #!/bin/bash
 # Firecracker network auto-configuration
 # Reads all settings from kernel boot args:
@@ -361,7 +361,7 @@ NETSCRIPT
 
 sudo chmod +x "$ROOTFS_DIR/usr/local/bin/fcnet-setup.sh"
 
-sudo tee "$ROOTFS_DIR/etc/systemd/system/fcnet-setup.service" > /dev/null << 'SERVICE'
+sudo tee "$ROOTFS_DIR/etc/systemd/system/fcnet-setup.service" >/dev/null <<'SERVICE'
 [Unit]
 Description=Firecracker Network Setup
 After=network.target local-fs.target
@@ -378,7 +378,7 @@ WantedBy=multi-user.target
 SERVICE
 
 sudo ln -sf /etc/systemd/system/fcnet-setup.service \
-    "$ROOTFS_DIR/etc/systemd/system/multi-user.target.wants/fcnet-setup.service"
+	"$ROOTFS_DIR/etc/systemd/system/multi-user.target.wants/fcnet-setup.service"
 
 # ============================================================
 # Generate SSH keys
@@ -386,8 +386,8 @@ sudo ln -sf /etc/systemd/system/fcnet-setup.service \
 echo "Setting up SSH access..."
 
 if [ ! -f "${KEY_DIR}/debian-trixie.id_rsa" ]; then
-    mkdir -p "${KEY_DIR}"
-    ssh-keygen -f "${KEY_DIR}/debian-trixie.id_rsa" -N ""
+	mkdir -p "${KEY_DIR}"
+	ssh-keygen -f "${KEY_DIR}/debian-trixie.id_rsa" -N ""
 fi
 
 sudo mkdir -p "$ROOTFS_DIR/root/.ssh"
@@ -523,12 +523,12 @@ sudo chroot "$ROOTFS_DIR" /bin/bash -c '
 echo "  Playwright + Chromium installed"
 
 # Copy offline deps into chroot filesystem before installing invisible_playwright
-OFFLINE_DEPS="/root/offline-deps"
+OFFLINE_DEPS="${SCRIPT_DIR}/offline-deps"
 if [ -d "$OFFLINE_DEPS" ]; then
-    sudo cp -a "$OFFLINE_DEPS/invisible_playwright" "$ROOTFS_DIR/tmp/invisible_playwright_src"
-    if [ -f "$OFFLINE_DEPS/firefox-7-patched.tar.gz" ]; then
-        sudo cp "$OFFLINE_DEPS/firefox-7-patched.tar.gz" "$ROOTFS_DIR/tmp/"
-    fi
+	sudo cp -a "$OFFLINE_DEPS/invisible_playwright" "$ROOTFS_DIR/tmp/invisible_playwright_src"
+	if [ -f "$OFFLINE_DEPS/firefox-7-patched.tar.gz" ]; then
+		sudo cp "$OFFLINE_DEPS/firefox-7-patched.tar.gz" "$ROOTFS_DIR/tmp/"
+	fi
 fi
 
 sudo chroot "$ROOTFS_DIR" /bin/bash -c '
@@ -566,8 +566,8 @@ echo "  Invisible Playwright installed"
 echo "Injecting environment variables into VM..."
 
 # Write all non-comment lines from .env as exports into a profile script
-sed -n '/^[A-Z_]/s/^/export /p' "${SCRIPT_DIR}/.env" | \
-    sudo tee "$ROOTFS_DIR/etc/profile.d/99-vm-env.sh" > /dev/null
+sed -n '/^[A-Z_]/s/^/export /p' "${SCRIPT_DIR}/.env" |
+	sudo tee "$ROOTFS_DIR/etc/profile.d/99-vm-env.sh" >/dev/null
 sudo chmod 644 "$ROOTFS_DIR/etc/profile.d/99-vm-env.sh"
 echo "  Environment variables written to /etc/profile.d/99-vm-env.sh"
 
