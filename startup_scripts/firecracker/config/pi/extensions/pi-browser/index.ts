@@ -3,6 +3,7 @@ import { Type, StringEnum } from "@earendil-works/pi-ai";
 import { Text } from "@earendil-works/pi-tui";
 import { accessSync, constants } from "node:fs";
 import * as router from "./backend/router";
+import { cleanupFetchTempFiles } from "./backend/router";
 import { cleanupAll as cleanupPlaywright } from "./backend/playwright-backend";
 import { cleanupAll as cleanupStealth } from "./backend/stealth-backend";
 import { sessionManager } from "./utils/session-manager";
@@ -52,6 +53,8 @@ const browserNavigateTool = defineTool({
     "Use @e1, @e2 references from the accessibility tree with browser-click and browser-type to interact with page elements.",
     "If snapshot or interaction returns 'No active session', the page was fetched via HTTP. Calling browser-snapshot now will auto-launch an interactive browser and navigate to the last URL.",
     "After auto-launch, @e refs may have changed — a fresh accessibility tree is returned automatically. Use the new refs for interaction.",
+    "When the fetch result mentions a temp file with full content, use the read tool with offset/limit to access specific sections — do not read the entire file at once.",
+    "Fetch results are truncated to ~4K chars inline. If you need more content, either read the temp file in sections or re-navigate with strategy='chromium' for interactive access.",
   ],
   parameters: Type.Object({
     url: Type.String({ description: "The URL to navigate to" }),
@@ -97,14 +100,34 @@ const browserNavigateTool = defineTool({
       };
     }
 
+    // Safety net: if this is an interactive backend (a11y tree, not fetch markdown)
+    // and the content somehow escaped truncation, enforce a cap here.
+    // This prevents unbounded context flooding even if a code path in router.ts
+    // forgets to call compactSnapshot().
+    let contentText = result.content;
+    if (
+      result.elementCount !== undefined &&
+      result.backendUsed !== "fetch" &&
+      contentText.length > 8000
+    ) {
+      // Interactive a11y tree content should never exceed 8K chars after truncation.
+      // If it does, something went wrong — cap it at the compact limit.
+      let cut = contentText.lastIndexOf("\n", 4000);
+      if (cut < 2000) cut = 4000;
+      contentText = contentText.slice(0, cut) +
+        `\n… ${contentText.length - cut} more chars (auto-truncated)`;
+    }
+
     const lines = [
       `Title: ${result.title || "(no title)"}`,
       `URL: ${result.url}`,
       `Backend: ${result.backendUsed}`,
       result.elementCount !== undefined ? `Interactive elements: ${result.elementCount}` : "",
       result.botDetectionWarning ? `⚠ Bot detection triggered — may need stealth backend.` : "",
+      // filePath and totalChars are embedded in the content by router.ts for
+      // fetch results, but we include them in details for downstream use.
       "",
-      result.content,
+      contentText,
     ];
 
     return {
@@ -115,6 +138,8 @@ const browserNavigateTool = defineTool({
         backendUsed: result.backendUsed,
         elementCount: result.elementCount,
         botDetectionWarning: result.botDetectionWarning,
+        ...(result.filePath ? { filePath: result.filePath } : {}),
+        ...(result.totalChars ? { totalChars: result.totalChars } : {}),
       },
     };
   },
@@ -782,6 +807,7 @@ export default function (pi: ExtensionAPI) {
     await cleanupPlaywright().catch(() => {});
     await cleanupStealth().catch(() => {});
     await sessionManager.removeAll();
+    cleanupFetchTempFiles();  // remove any spilled fetch temp files
     try {
       ctx?.ui?.setStatus?.("browser", "");
     } catch {

@@ -6,6 +6,9 @@
  * and auto-detection.
  */
 
+import { mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { tmpdir } from "node:os";
 import * as fetchBackend from "./fetch-backend";
 import * as playwrightBackend from "./playwright-backend";
 import * as stealthBackend from "./stealth-backend";
@@ -37,6 +40,36 @@ const COMPACT_SNAPSHOT_VERY_LARGE = 8000;
  * How much of the top of the tree to preserve for very large pages.
  */
 const COMPACT_SNAPSHOT_TOP_LIMIT = 2000;
+
+// ─── Fetch truncation constants ────────────────────────────────────────────
+
+/**
+ * Maximum inline content length for fetch result Markdown (newline-aware cutoff).
+ * Slightly larger than COMPACT_SNAPSHOT_LIMIT (2500) because Markdown is denser
+ * than an a11y tree — it contains prose, not just element references.
+ * 4K chars ≈ 600–800 words, enough for a useful summary without flooding context.
+ */
+const COMPACT_FETCH_LIMIT = 4000;
+
+/**
+ * Only spill fetch content to a temp file when it exceeds this threshold.
+ * Content between COMPACT_FETCH_LIMIT and FETCH_SPILL_THRESHOLD is truncated
+ * inline but does NOT create a temp file (avoids I/O cost for marginal cases).
+ */
+const FETCH_SPILL_THRESHOLD = 5000;
+
+// ─── Temp file management ────────────────────────────────────────────────────
+
+/**
+ * Directory for fetch temp files under /tmp.
+ */
+const FETCH_TEMP_DIR = `${tmpdir()}/pi-browser`;
+
+/**
+ * Tracks active fetch temp files per task so stale ones can be cleaned up
+ * when a new navigation supersedes them.
+ */
+const activeFetchFiles = new Map<string, string[]>();
 
 // ─── Helpers — Interactive session management ──────────────────────────
 
@@ -142,6 +175,10 @@ export interface NavigateResult {
   botDetectionWarning?: boolean;
   error?: string;
   statusCode?: number;
+  /** Path to temp file with full fetch content (only for fetch backend when content exceeds FETCH_SPILL_THRESHOLD) */
+  filePath?: string;
+  /** Total character count before truncation (only for fetch backend) */
+  totalChars?: number;
 }
 
 export interface SnapshotResult {
@@ -195,7 +232,7 @@ async function escalateToStealthIfAuto(
         success: true,
         url: stealthResult.url,
         title: stealthResult.title,
-        content: stealthResult.snapshot,
+        content: compactSnapshot(stealthResult.snapshot, stealthResult.elementCount),
         elementCount: stealthResult.elementCount,
         backendUsed: "stealth",
         botDetectionWarning: true,
@@ -203,6 +240,110 @@ async function escalateToStealthIfAuto(
     }
   }
   return null;
+}
+
+// ─── Fetch temp file management ──────────────────────────────────────────
+
+/**
+ * Format bytes into a human-readable string like "47KB" or "1.2MB".
+ */
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes}B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)}KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+}
+
+/**
+ * Write fetch content to a temp Markdown file under /tmp/pi-browser/.
+ * Filename format: fetch-{safeTaskId}-{contentHash}.md
+ *
+ * Returns the absolute file path.
+ */
+function writeFetchTempFile(content: string, taskId: string): string {
+  try { mkdirSync(FETCH_TEMP_DIR, { recursive: true }); } catch { /* best-effort */ }
+
+  const hash = createHash("sha256").update(content).digest("hex").slice(0, 8);
+  const safeTaskId = taskId.replace(/[^a-zA-Z0-9-]/g, "_");
+  const filePath = `${FETCH_TEMP_DIR}/fetch-${safeTaskId}-${hash}.md`;
+
+  writeFileSync(filePath, content, "utf-8");
+  return filePath;
+}
+
+/**
+ * Track a fetch temp file for a task and clean up any previous file for
+ * the same task (prevents stale reads from conversation history).
+ */
+function trackFetchFile(taskId: string, filePath: string): void {
+  const existing = activeFetchFiles.get(taskId) ?? [];
+  // Clean up previous files for this task
+  for (const oldPath of existing) {
+    try { rmSync(oldPath, { force: true }); } catch { /* best-effort */ }
+  }
+  activeFetchFiles.set(taskId, [filePath]);
+}
+
+interface CappedFetchContent {
+  /** The truncated content to return inline */
+  inline: string;
+  /** Path to temp file with full content, or undefined if under the spill threshold */
+  filePath: string | undefined;
+  /** Total character count of the original content */
+  totalChars: number;
+}
+
+/**
+ * Cap fetch content for inline display.
+ *
+ * Strategy:
+ * - Content <= FETCH_SPILL_THRESHOLD (5K): return inline, no file.
+ * - Content > FETCH_SPILL_THRESHOLD: write full content to temp file,
+ *   return truncated inline version with file path reference.
+ */
+function capFetchContent(content: string, taskId: string): CappedFetchContent {
+  const totalChars = content.length;
+
+  // Under the spill threshold — no temp file needed, return inline
+  if (totalChars <= FETCH_SPILL_THRESHOLD) {
+    return { inline: content, filePath: undefined, totalChars };
+  }
+
+  // Over the spill threshold — write full content to temp file
+  const filePath = writeFetchTempFile(content, taskId);
+  trackFetchFile(taskId, filePath);
+
+  // Truncate inline content at newline boundary near the limit
+  let cut = content.lastIndexOf("\n", COMPACT_FETCH_LIMIT);
+  if (cut < COMPACT_FETCH_LIMIT / 2) cut = COMPACT_FETCH_LIMIT;
+
+  const inline = content.slice(0, cut) +
+    `\n\n… ${totalChars - cut} more chars. Full content in ${filePath}`;
+
+  return { inline, filePath, totalChars };
+}
+
+/**
+ * Remove all fetch temp files.
+ * If taskId is provided, only removes files for that task.
+ */
+export function cleanupFetchTempFiles(taskId?: string): void {
+  if (taskId) {
+    const paths = activeFetchFiles.get(taskId) ?? [];
+    for (const p of paths) {
+      try { rmSync(p, { force: true }); } catch { /* best-effort */ }
+    }
+    activeFetchFiles.delete(taskId);
+  } else {
+    // Remove all tracked files
+    for (const [, paths] of activeFetchFiles) {
+      for (const p of paths) {
+        try { rmSync(p, { force: true }); } catch { /* best-effort */ }
+      }
+    }
+    activeFetchFiles.clear();
+    // Also try to remove the temp directory itself
+    try { rmSync(FETCH_TEMP_DIR, { recursive: true, force: true }); } catch { /* best-effort */ }
+  }
 }
 
 // ─── Navigation ───────────────────────────────────────────────────────
@@ -244,12 +385,24 @@ export async function navigate(
     sessionManager.setLastNav(taskId, finalUrl, result.title || "");
 
     if (result.success && !result.needsJavaScript) {
+      const { inline, filePath, totalChars } = capFetchContent(result.content, taskId);
+      // If a temp file was created, prepend the file reference so the model
+      // knows it can use read with offset/limit to access the full content.
+      let content = inline;
+      if (filePath) {
+        content = `📄 Full content saved to ${filePath} (${formatBytes(totalChars)}). Use read with offset/limit to access specific sections — do not read the entire file at once.\n\n${inline}`;
+      }
+      // Conditionally include filePath/totalChars to respect exactOptionalPropertyTypes
+      const extra: Record<string, unknown> = {};
+      if (filePath) extra.filePath = filePath;
+      if (totalChars) extra.totalChars = totalChars;
       return {
         success: true, url: result.url, title: result.title,
-        content: result.content,
+        content,
         backendUsed: "fetch",
         statusCode: result.statusCode,
-      };
+        ...extra,
+      } as NavigateResult;
     }
 
     if (result.needsJavaScript && strategy === "auto") {
