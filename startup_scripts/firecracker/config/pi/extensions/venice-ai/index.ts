@@ -1,4 +1,7 @@
-import type { ExtensionAPI, ProviderModelConfig } from "@earendil-works/pi-coding-agent";
+import type {
+	ExtensionAPI,
+	ProviderModelConfig,
+} from "@earendil-works/pi-coding-agent";
 
 interface VeniceModel {
 	id: string;
@@ -21,6 +24,7 @@ interface VeniceModel {
 			supportsMultipleImages?: boolean;
 			maxImages?: number;
 			supportsResponseSchema?: boolean;
+			supportsE2EE?: boolean;
 		};
 		pricing?: {
 			input?: { usd?: number; diem?: number };
@@ -41,14 +45,20 @@ interface VeniceModelsResponse {
 	type: string;
 }
 
-async function fetchVeniceModels(): Promise<ProviderModelConfig[]> {
+async function fetchVeniceModels(): Promise<{
+	openai: ProviderModelConfig[];
+	e2ee: ProviderModelConfig[];
+}> {
 	const response = await fetch("https://api.venice.ai/api/v1/models?type=text");
 	if (!response.ok) {
 		throw new Error(`Venice models API returned ${response.status}`);
 	}
 
 	const data: VeniceModelsResponse = await response.json();
-	const models: ProviderModelConfig[] = [];
+	// Common filters applied to both providers:
+	// - text-only models, not offline, private privacy tier, not Grok
+	const openaiModels: ProviderModelConfig[] = [];
+	const e2eeModels: ProviderModelConfig[] = [];
 
 	for (const m of data.data) {
 		if (m.type !== "text") continue;
@@ -60,12 +70,18 @@ async function fetchVeniceModels(): Promise<ProviderModelConfig[]> {
 		const pricing = spec.pricing ?? {};
 		const caps = spec.capabilities ?? {};
 
-		models.push({
+		const config: ProviderModelConfig = {
 			id: m.id,
 			name: spec.name ?? m.id,
 			reasoning: caps.supportsReasoning ?? false,
 			thinkingLevelMap: caps.supportsReasoningEffort
-				? { minimal: "minimal", low: "low", medium: "medium", high: "high", xhigh: "xhigh" }
+				? {
+						minimal: "minimal",
+						low: "low",
+						medium: "medium",
+						high: "high",
+						xhigh: "xhigh",
+					}
 				: undefined,
 			input: caps.supportsVision ? ["text", "image"] : ["text"],
 			cost: {
@@ -76,32 +92,48 @@ async function fetchVeniceModels(): Promise<ProviderModelConfig[]> {
 			},
 			contextWindow: spec.availableContextTokens ?? m.context_length ?? 32768,
 			maxTokens: spec.maxCompletionTokens ?? 4096,
-		});
+		};
+
+		if (caps.supportsE2EE) {
+			e2eeModels.push(config);
+		} else {
+			openaiModels.push(config);
+		}
 	}
 
-	return models;
+	return { openai: openaiModels, e2ee: e2eeModels };
 }
 
 export default async function (pi: ExtensionAPI) {
-	let models: ProviderModelConfig[];
+	let models: { openai: ProviderModelConfig[]; e2ee: ProviderModelConfig[] };
 
 	try {
 		models = await fetchVeniceModels();
 	} catch (error) {
-		console.warn(`[venice-ai] Failed to fetch models: ${error instanceof Error ? error.message : String(error)}`);
+		console.warn(
+			`[venice-ai] Failed to fetch models: ${error instanceof Error ? error.message : String(error)}`,
+		);
 		return;
 	}
 
-	if (models.length === 0) {
+	if (models.openai.length === 0 && models.e2ee.length === 0) {
 		console.warn("[venice-ai] No text models returned from Venice API");
 		return;
 	}
 
+	// Provider for OpenAI-compatible private models
 	pi.registerProvider("venice", {
 		name: "Venice AI",
 		baseUrl: "https://api.venice.ai/api/v1",
 		apiKey: "$VENICE_API_KEY",
 		api: "openai-completions",
-		models,
+		models: models.openai,
 	});
+
+	// Provider for E2EE (end-to-end encrypted) models.
+	// Currently disabled: E2EE requires a custom streamSimple handler with
+	// secp256k1 key exchange, TEE attestation, and AES-256-GCM message
+	// encryption/decryption — not yet implemented.
+	// TODO: Implement tee-handler.ts and wire it up to enable these models.
+	pi.registerProvider("venice-e2ee", {});
 }
