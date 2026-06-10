@@ -438,7 +438,8 @@ sudo chroot "$ROOTFS_DIR" /bin/bash -c '
     pi install npm:pi-subagents
     pi install npm:@juicesharp/rpiv-ask-user-question
     pi install npm:@juicesharp/rpiv-todo
-    echo "  Pi packages installed: pi-subagents, rpiv-ask-user-question, rpiv-todo"
+    pi install npm:pi-llama-cpp
+    echo "  Pi packages installed: pi-subagents, rpiv-ask-user-question, rpiv-todo, pi-llama-cpp"
 '
 
 # ============================================================

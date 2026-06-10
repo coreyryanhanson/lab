@@ -1,6 +1,41 @@
 {
-  "lastChangelogVersion": "0.78.0",
-  "defaultProvider": "local-llama",
-  "defaultModel": "llama-local",
-  "defaultThinkingLevel": "medium"
+  "lastChangelogVersion": "0.79.1",
+  "defaultThinkingLevel": "medium",
+  "defaultProvider": "llama-server=http://192.168.100.1:8001",
+  "enabledModels": [
+    "opencode-zen/deepseek-v4-flash-free",
+    "venice/zai-org-glm-5-1",
+    "venice/google-gemma-4-31b-it",
+    "llama-server=http://192.168.100.1:8001/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
+  ],
+  "browserToggle": {
+    "defaultEnabled": true
+  },
+  "browser": {
+    "plugins": [
+      {
+        "name": "chromium",
+        "dir": "chromium",
+        "enabled": true,
+        "config": {}
+      },
+      {
+        "name": "chromium-py",
+        "dir": "chromium-py",
+        "enabled": true,
+        "config": {
+          "pythonPath": "/root/.pi/agent/extensions/pi-browser/backends/python-base/.venv/bin/python3"
+        }
+      }
+    ]
+  },
+  "llamaServerUrl": "http://192.168.100.1:8001",
+  "packages": [
+    "npm:pi-subagents",
+    "npm:pi-lens",
+    "npm:@juicesharp/rpiv-todo",
+    "npm:@juicesharp/rpiv-ask-user-question",
+    "npm:pi-llama-cpp"
+  ],
+  "defaultModel": "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
 }
