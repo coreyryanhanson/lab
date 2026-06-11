@@ -2,6 +2,12 @@ import type {
 	ExtensionAPI,
 	ProviderModelConfig,
 } from "@earendil-works/pi-coding-agent";
+import { appendFileSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+
+// ---------------------------------------------------------------------------
+// Venice API types
+// ---------------------------------------------------------------------------
 
 interface VeniceModel {
 	id: string;
@@ -45,6 +51,68 @@ interface VeniceModelsResponse {
 	type: string;
 }
 
+// ---------------------------------------------------------------------------
+// Debug logging
+// ---------------------------------------------------------------------------
+
+const DEBUG_DIR = "/tmp/venice-debug";
+let debugEnabled = false;
+let currentSessionDir: string | null = null;
+let requestCounter = 0;
+
+/** Create a timestamped session dir and write an initial marker. */
+function initDebugSession(): string {
+	const ts = new Date().toISOString().replace(/[:.]/g, "-");
+	const dir = join(DEBUG_DIR, ts);
+	mkdirSync(dir, { recursive: true });
+	writeFileSync(join(dir, ".session"), `started: ${ts}\n`, "utf8");
+	return dir;
+}
+
+/** Append a line to the session's event log. */
+function logEvent(event: string, data: unknown): void {
+	if (!currentSessionDir) {
+		currentSessionDir = initDebugSession();
+	}
+	const file = join(currentSessionDir, "events.ndjson");
+	appendFileSync(
+		file,
+		JSON.stringify({ ts: Date.now(), event, data }) + "\n",
+		"utf8",
+	);
+}
+
+/** Write a standalone JSON file in the session dir. */
+function logFile(name: string, data: unknown): void {
+	if (!currentSessionDir) {
+		currentSessionDir = initDebugSession();
+	}
+	writeFileSync(
+		join(currentSessionDir, name),
+		JSON.stringify(data, null, 2),
+		"utf8",
+	);
+}
+
+// ---------------------------------------------------------------------------
+// Models that do NOT support the OpenAI `developer` role.
+//
+// Venice returns HTTP 200 with a non-standard SSE error chunk for these models
+// when `developer` is used, which pi's stream parser sees as "Stream ended
+// without finish_reason". Setting supportsDeveloperRole: false tells pi to
+// send `system` instead.
+//
+// Add model IDs here as you discover them. Models NOT in this set default to
+// whatever pi's auto-detection decides (usually `developer` for reasoning models).
+// ---------------------------------------------------------------------------
+const MODELS_REQUIRING_SYSTEM_ROLE: ReadonlySet<string> = new Set([
+	"qwen3-6-27b",
+]);
+
+// ---------------------------------------------------------------------------
+// Model fetching
+// ---------------------------------------------------------------------------
+
 async function fetchVeniceModels(): Promise<{
 	openai: ProviderModelConfig[];
 	e2ee: ProviderModelConfig[];
@@ -74,13 +142,17 @@ async function fetchVeniceModels(): Promise<{
 			id: m.id,
 			name: spec.name ?? m.id,
 			reasoning: caps.supportsReasoning ?? false,
+			// Venice accepts: "none", "low", "medium", "high"
+			// Map pi levels to valid Venice reasoning_effort values.
+			// "minimal" and "xhigh" are NOT valid — they map to nearest valid.
 			thinkingLevelMap: caps.supportsReasoningEffort
 				? {
-						minimal: "minimal",
+						off: "none",
+						minimal: "none",
 						low: "low",
 						medium: "medium",
 						high: "high",
-						xhigh: "xhigh",
+						xhigh: "high",
 					}
 				: undefined,
 			input: caps.supportsVision ? ["text", "image"] : ["text"],
@@ -92,6 +164,13 @@ async function fetchVeniceModels(): Promise<{
 			},
 			contextWindow: spec.availableContextTokens ?? m.context_length ?? 32768,
 			maxTokens: spec.maxCompletionTokens ?? 4096,
+			// Models that don't support the `developer` role must be overridden
+			// so pi sends `system` instead. Without this, Venice returns an
+			// empty SSE stream with a validation error, causing pi to throw
+			// "Stream ended without finish_reason".
+			...(MODELS_REQUIRING_SYSTEM_ROLE.has(m.id)
+				? { compat: { supportsDeveloperRole: false } }
+				: {}),
 		};
 
 		if (caps.supportsE2EE) {
@@ -103,6 +182,10 @@ async function fetchVeniceModels(): Promise<{
 
 	return { openai: openaiModels, e2ee: e2eeModels };
 }
+
+// ---------------------------------------------------------------------------
+// Extension entry point
+// ---------------------------------------------------------------------------
 
 export default async function (pi: ExtensionAPI) {
 	let models: { openai: ProviderModelConfig[]; e2ee: ProviderModelConfig[] };
@@ -136,4 +219,178 @@ export default async function (pi: ExtensionAPI) {
 	// encryption/decryption — not yet implemented.
 	// TODO: Implement tee-handler.ts and wire it up to enable these models.
 	pi.registerProvider("venice-e2ee", {});
+
+	// -----------------------------------------------------------------------
+	// /debugvenice — Toggle debug logging for Venice provider
+	// -----------------------------------------------------------------------
+	//
+	// Uses pi's event system (before_provider_request, after_provider_response,
+	// message_end) to capture debug data WITHOUT modifying the streaming
+	// pipeline. This is safe — it cannot break tool calling because it only
+	// observes events, never replaces the stream handler.
+	//
+	// Logs go to /tmp/venice-debug/<timestamp-session>/ and include:
+	//   request-payload.json  — Full request body sent to Venice
+	//   response-headers.json  — HTTP status + response headers
+	//   message-summary.json   — Final message state (usage, stopReason, error)
+	//   events.ndjson          — Timestamped event stream (all debug events)
+	//
+	// Usage: /debugvenice          — Toggle on/off
+	//        /debugvenice status   — Show current state and log location
+	//        /debugvenice open     — Show the debug log directory path
+	//        /debugvenice latest   — Show the most recent request payload
+
+	pi.registerCommand("debugvenice", {
+		description: "Toggle Venice debug logging (captures request/response data)",
+		handler: async (args, ctx) => {
+			const sub = (args ?? "").trim().toLowerCase();
+
+			if (sub === "status") {
+				if (!debugEnabled) {
+					ctx.ui.notify("Venice debug: OFF", "info");
+				} else {
+					ctx.ui.notify(
+						`Venice debug: ON\nSession dir: ${currentSessionDir ?? "(none yet)"}`,
+						"info",
+					);
+				}
+				return;
+			}
+
+			if (sub === "open") {
+				if (!currentSessionDir) {
+					ctx.ui.notify("No debug session yet — toggle on first", "warning");
+					return;
+				}
+				ctx.ui.notify(`Debug logs: ${currentSessionDir}`, "info");
+				return;
+			}
+
+			if (sub === "latest") {
+				if (!currentSessionDir) {
+					ctx.ui.notify("No debug session yet — toggle on first", "warning");
+					return;
+				}
+				try {
+					const files = readdirSync(currentSessionDir)
+						.filter(
+							(f) => f.startsWith("request-payload-") && f.endsWith(".json"),
+						)
+						.sort();
+					if (files.length === 0) {
+						ctx.ui.notify("No request payloads captured yet", "info");
+						return;
+					}
+					const latest = files[files.length - 1]!;
+					ctx.ui.notify(
+						`Latest payload: ${join(currentSessionDir, latest)}`,
+						"info",
+					);
+				} catch {
+					ctx.ui.notify("Could not read debug directory", "error");
+				}
+				return;
+			}
+
+			// Toggle
+			debugEnabled = !debugEnabled;
+			requestCounter = 0;
+
+			if (debugEnabled) {
+				currentSessionDir = initDebugSession();
+				ctx.ui.setStatus("venice-debug", "🔍 Venice Debug ON");
+				ctx.ui.notify(
+					`Venice debug logging ON\nLogs: ${currentSessionDir}`,
+					"info",
+				);
+			} else {
+				ctx.ui.setStatus("venice-debug", undefined);
+				ctx.ui.notify("Venice debug logging OFF", "info");
+			}
+		},
+	});
+
+	// -----------------------------------------------------------------------
+	// Debug event handlers (only active when debugEnabled is true)
+	// -----------------------------------------------------------------------
+
+	pi.on("before_provider_request", (event) => {
+		if (!debugEnabled) return;
+		// Log all requests when debugging — Venice model IDs (like "qwen3-6-27b")
+		// don't contain "venice", so we can't reliably filter by model name.
+		// Users can filter by model in the log files.
+
+		requestCounter++;
+		const id = String(requestCounter).padStart(3, "0");
+
+		logEvent("before_provider_request", {
+			requestId: id,
+			model: event.payload?.model,
+		});
+		logFile(`request-payload-${id}.json`, event.payload);
+	});
+
+	pi.on("after_provider_response", (event) => {
+		if (!debugEnabled) return;
+
+		logEvent("after_provider_response", {
+			status: event.status,
+			contentType: event.headers?.["content-type"],
+		});
+		logFile(`response-headers-${requestCounter}.json`, {
+			status: event.status,
+			headers: event.headers,
+		});
+	});
+
+	pi.on("message_end", async (event) => {
+		if (!debugEnabled) return;
+		const msg = event.message;
+		if (msg.role !== "assistant") return;
+
+		// Only log for Venice provider responses.
+		// Venice model IDs (e.g. "qwen3-6-27b") don't contain "venice",
+		// but msg.provider should be "venice" since that's our provider name.
+		if (msg.provider !== "venice") return;
+
+		logEvent("message_end", {
+			role: msg.role,
+			stopReason: msg.stopReason,
+			errorMessage: msg.errorMessage,
+			usage: msg.usage,
+			contentBlockCount: msg.content?.length,
+			contentTypes: msg.content?.map((b: { type: string }) => b.type),
+		});
+
+		// Write a summary file for the last completed response
+		logFile("message-summary.json", {
+			stopReason: msg.stopReason,
+			errorMessage: msg.errorMessage,
+			usage: msg.usage,
+			contentBlocks: msg.content?.map((b: { type: string }) => ({
+				type: b.type,
+				...(b.type === "text"
+					? { length: (b as { text: string }).text?.length }
+					: {}),
+				...(b.type === "toolCall"
+					? {
+							name: (b as { name: string }).name,
+							id: (b as { id: string }).id,
+						}
+					: {}),
+				...(b.type === "thinking"
+					? { length: (b as { thinking: string }).thinking?.length }
+					: {}),
+			})),
+		});
+	});
+
+	// Also log turn-level info for context
+	pi.on("turn_end", async (event) => {
+		if (!debugEnabled) return;
+
+		logEvent("turn_end", {
+			turnIndex: event.turnIndex,
+		});
+	});
 }
