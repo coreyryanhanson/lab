@@ -110,6 +110,15 @@ const MODELS_REQUIRING_SYSTEM_ROLE: ReadonlySet<string> = new Set([
 ]);
 
 // ---------------------------------------------------------------------------
+// Model context window lookup (populated during model fetch).
+// Used by before_provider_request to clamp max_tokens.
+// ---------------------------------------------------------------------------
+const MODEL_METADATA: Map<
+	string,
+	{ contextWindow: number; maxTokens: number }
+> = new Map();
+
+// ---------------------------------------------------------------------------
 // Model fetching
 // ---------------------------------------------------------------------------
 
@@ -138,6 +147,9 @@ async function fetchVeniceModels(): Promise<{
 		const pricing = spec.pricing ?? {};
 		const caps = spec.capabilities ?? {};
 
+		const ctxWindow = spec.availableContextTokens ?? m.context_length ?? 32768;
+		const maxOut = spec.maxCompletionTokens ?? 4096;
+
 		const config: ProviderModelConfig = {
 			id: m.id,
 			name: spec.name ?? m.id,
@@ -162,8 +174,8 @@ async function fetchVeniceModels(): Promise<{
 				cacheRead: pricing.cache_input?.usd ?? 0,
 				cacheWrite: pricing.cache_write?.usd ?? 0,
 			},
-			contextWindow: spec.availableContextTokens ?? m.context_length ?? 32768,
-			maxTokens: spec.maxCompletionTokens ?? 4096,
+			contextWindow: ctxWindow,
+			maxTokens: maxOut,
 			// Models that don't support the `developer` role must be overridden
 			// so pi sends `system` instead. Without this, Venice returns an
 			// empty SSE stream with a validation error, causing pi to throw
@@ -173,6 +185,12 @@ async function fetchVeniceModels(): Promise<{
 				: {}),
 		};
 
+		// Populate model metadata lookup for before_provider_request
+		MODEL_METADATA.set(m.id, {
+			contextWindow: ctxWindow,
+			maxTokens: maxOut,
+		});
+
 		if (caps.supportsE2EE) {
 			e2eeModels.push(config);
 		} else {
@@ -181,6 +199,55 @@ async function fetchVeniceModels(): Promise<{
 	}
 
 	return { openai: openaiModels, e2ee: e2eeModels };
+}
+
+// ---------------------------------------------------------------------------
+// Token estimation helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Estimate the number of input tokens from a chat completion payload.
+ *
+ * We deliberately overestimate input tokens so max_tokens leaves
+ * enough room in the context window. An overestimate is SAFE — it
+ * gives the API more room than needed.
+ *
+ * Heuristics:
+ *   1 token ≈ 2 characters  — worst-case dense code/symbols
+ *   +8 tokens per message for role/metadata overhead
+ *
+ * Real-world ratios are 1:3 to 1:5 for mixed text+code, so this
+ * overestimates input by 50-150%, which translates to a generous
+ * safety buffer for max_tokens.
+ */
+function estimateInputTokensFromPayload(
+	payload: Record<string, unknown>,
+): number {
+	const messages = payload.messages as
+		| Array<{ role: string; content: unknown }>
+		| undefined;
+	if (!messages || !Array.isArray(messages)) return 0;
+
+	let totalChars = 0;
+	for (const msg of messages) {
+		if (typeof msg.content === "string") {
+			totalChars += msg.content.length;
+		} else if (Array.isArray(msg.content)) {
+			for (const part of msg.content as Array<Record<string, unknown>>) {
+				if (part.type === "text" && typeof part.text === "string") {
+					totalChars += part.text.length;
+				}
+				// Ignore image content blocks — underestimating image token
+				// overhead is safe (more room for max_tokens = safer).
+			}
+		}
+		// Per-message overhead: role string, metadata, spacing (~8 tokens)
+		totalChars += 16;
+	}
+
+	// 1 token per 2 characters: always overestimates since even dense code
+	// is at least ~2 chars/token and typical text is 4-5 chars/token.
+	return Math.ceil(totalChars / 2);
 }
 
 // ---------------------------------------------------------------------------
@@ -308,6 +375,78 @@ export default async function (pi: ExtensionAPI) {
 				ctx.ui.notify("Venice debug logging OFF", "info");
 			}
 		},
+	});
+
+	// -----------------------------------------------------------------------
+	// before_provider_request — Clamp max_tokens to fit within context window
+	//
+	// Venice defaults max_tokens to maxCompletionTokens (e.g. 131072) when the
+	// client doesn't send it. When input is large, input + max_tokens can exceed
+	// the model's contextWindow, causing a 400 error and triggering compaction.
+	//
+	// This handler estimates input tokens and clamps max_tokens so that
+	//   input_tokens + max_tokens <= contextWindow - safety_margin
+	//
+	// Registered before the debug handler so it runs first in the chain.
+	// -----------------------------------------------------------------------
+
+	pi.on("before_provider_request", (event) => {
+		const payload = event.payload as Record<string, unknown> | undefined;
+		if (!payload || typeof payload !== "object") return;
+
+		const modelId = payload.model as string | undefined;
+		if (!modelId) return;
+
+		const meta = MODEL_METADATA.get(modelId);
+		if (!meta) return;
+
+		const { contextWindow } = meta;
+
+		// --- Compute safe max_tokens from context window ---
+		//
+		// Venice's API returns maxCompletionTokens (e.g. 24000 for GLM 5.1)
+		// but when pi doesn't send max_tokens, Venice defaults to the model's
+		// actual capacity (often 131072), which can overflow the context
+		// window. We compute a safe value from the context window alone,
+		// ignoring maxCompletionTokens which is often misleading.
+
+		const safetyMargin = 8192;
+		const inputTokens = estimateInputTokensFromPayload(payload);
+		const inputReserve = Math.max(inputTokens, contextWindow * 0.25);
+		const maxFromContext = contextWindow - inputReserve - safetyMargin;
+		const minOutput = 16384;
+		const safeMax = Math.max(minOutput, maxFromContext);
+
+		// --- Case 1: pi didn't set max_tokens at all ---
+		//
+		// This is the common case. Pi never sends max_tokens, so Venice
+		// defaults to the model's full completion capacity (often 131072),
+		// which can overflow. Always set max_tokens explicitly.
+
+		if (!("max_tokens" in payload) && !("max_completion_tokens" in payload)) {
+			return { ...payload, max_tokens: safeMax };
+		}
+
+		// --- Case 2: pi set max_tokens explicitly ---
+		//
+		// Only clamp downward if the set value exceeds our safe level.
+		// Never increase max_tokens beyond what pi requested.
+
+		const currentMax =
+			(payload.max_tokens as number) ??
+			(payload.max_completion_tokens as number) ??
+			meta.maxTokens;
+
+		if (currentMax <= safeMax) return;
+
+		const updated = {
+			...payload,
+			max_tokens: safeMax,
+		};
+		if ("max_completion_tokens" in updated) {
+			delete (updated as Record<string, unknown>).max_completion_tokens;
+		}
+		return updated;
 	});
 
 	// -----------------------------------------------------------------------
