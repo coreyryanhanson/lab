@@ -400,22 +400,33 @@ export default async function (pi: ExtensionAPI) {
 		const meta = MODEL_METADATA.get(modelId);
 		if (!meta) return;
 
-		const { contextWindow } = meta;
+		const { contextWindow, maxTokens: apiMaxTokens } = meta;
 
-		// --- Compute safe max_tokens from context window ---
+		// --- Compute safe max_tokens ---
 		//
-		// Venice's API returns maxCompletionTokens (e.g. 24000 for GLM 5.1)
-		// but when pi doesn't send max_tokens, Venice defaults to the model's
-		// actual capacity (often 131072), which can overflow the context
-		// window. We compute a safe value from the context window alone,
-		// ignoring maxCompletionTokens which is often misleading.
+		// Two constraints:
+		//   1. Context window: input_tokens + max_tokens must not overflow.
+		//   2. Model capacity: max_tokens must not exceed the server-side
+		//      limit (often 131072 for GLM 5.1, even though its API reports
+		//      maxCompletionTokens as 24000 — a known Venice discrepancy).
+		//
+		// We use max(apiMaxTokens, contextWindow * 0.4) as the effective cap:
+		// for models where the API value is trustworthy it is used directly;
+		// for models where it's clearly too low (< 40% of context) we raise
+		// the ceiling to avoid wasting output capacity.
 
 		const safetyMargin = 8192;
 		const inputTokens = estimateInputTokensFromPayload(payload);
 		const inputReserve = Math.max(inputTokens, contextWindow * 0.25);
 		const maxFromContext = contextWindow - inputReserve - safetyMargin;
 		const minOutput = 16384;
-		const safeMax = Math.max(minOutput, maxFromContext);
+
+		// Effective cap: never exceed what the model can actually produce.
+		// Use the higher of the API-reported maxTokens and 40% of context,
+		// since some models (e.g. GLM 5.1) report implausibly low values.
+		const effectiveCap = Math.max(apiMaxTokens, contextWindow * 0.4);
+
+		const safeMax = Math.max(minOutput, Math.min(maxFromContext, effectiveCap));
 
 		// --- Case 1: pi didn't set max_tokens at all ---
 		//
