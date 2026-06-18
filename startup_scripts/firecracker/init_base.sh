@@ -69,7 +69,7 @@ sudo mount -t sysfs sysfs "$ROOTFS_DIR/sys"
 sudo mount -t devtmpfs devtmpfs "$ROOTFS_DIR/dev"
 
 # Bundle tmux config into the VM
-cp "${SCRIPT_DIR}/config/tmux.conf" "$ROOTFS_DIR/root/.tmux.conf"
+sudo cp "${SCRIPT_DIR}/config/tmux.conf" "$ROOTFS_DIR/root/.tmux.conf"
 
 sudo chroot "$ROOTFS_DIR" /bin/bash -c '
     # Set root password
@@ -493,7 +493,7 @@ sudo chroot "$ROOTFS_DIR" /bin/bash -c '
     git clone --depth 1 https://github.com/searxng/searxng.git /usr/local/searxng/searxng-src
 
     # Create Python venv with uv and install SearXNG + Granian
-    uv venv /usr/local/searxng/searx-pyenv
+    /usr/local/bin/uv venv /usr/local/searxng/searx-pyenv
     # Build deps must be installed before editable install (searx/__init__.py imports msgspec at setup time)
     VIRTUAL_ENV=/usr/local/searxng/searx-pyenv /usr/local/bin/uv pip install setuptools wheel msgspec pyyaml typing-extensions pybind11
     VIRTUAL_ENV=/usr/local/searxng/searx-pyenv /usr/local/bin/uv pip install -e /usr/local/searxng/searxng-src --no-build-isolation
@@ -548,7 +548,7 @@ fi
 
 sudo chroot "$ROOTFS_DIR" /bin/bash -c '
     # Python invisible_playwright (patched Firefox for stealth)
-    uv venv /opt/ipw-pyenv
+    /usr/local/bin/uv venv /opt/ipw-pyenv
 
     # Install from local source copy (offline-deps, no git clone needed)
     if [ -d /tmp/invisible_playwright_src ]; then
