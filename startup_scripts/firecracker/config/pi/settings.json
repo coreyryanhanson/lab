@@ -1,15 +1,20 @@
 {
-  "lastChangelogVersion": "0.79.1",
-  "defaultThinkingLevel": "medium",
-  "defaultProvider": "llama-server=http://192.168.100.1:8001",
+  "lastChangelogVersion": "0.80.2",
+  "defaultThinkingLevel": "high",
+  "defaultProvider": "venice",
   "enabledModels": [
     "opencode-zen/deepseek-v4-flash-free",
-    "venice/zai-org-glm-5-1",
-    "venice/google-gemma-4-31b-it",
-    "llama-server=http://192.168.100.1:8001/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
+    "llama-server=http://192.168.100.1:8001/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
+    "venice/zai-org-glm-5-2",
+    "openrouter/google/gemma-4-31b-it:free",
+    "openrouter/deepseek/deepseek-v4-flash",
+    "venice/qwen3-6-27b"
   ],
   "browserToggle": {
-    "defaultEnabled": true
+    "defaultEnabled": false
+  },
+  "searxng": {
+    "url": "http://127.0.0.1:8888"
   },
   "browser": {
     "plugins": [
@@ -20,12 +25,10 @@
         "config": {}
       },
       {
-        "name": "chromium-py",
-        "dir": "chromium-py",
+        "name": "firefox",
+        "dir": "firefox",
         "enabled": true,
-        "config": {
-          "pythonPath": "/root/.pi/agent/extensions/pi-browser/backends/python-base/.venv/bin/python3"
-        }
+        "config": {}
       }
     ]
   },
@@ -35,7 +38,10 @@
     "npm:pi-lens",
     "npm:@juicesharp/rpiv-todo",
     "npm:@juicesharp/rpiv-ask-user-question",
-    "npm:pi-llama-cpp"
+    "npm:pi-llama-cpp",
+    "npm:pi-simplify",
+    "npm:pi-lean-dimension"
   ],
-  "defaultModel": "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
+  "defaultModel": "zai-org-glm-5-2",
+  "theme": "dark"
 }

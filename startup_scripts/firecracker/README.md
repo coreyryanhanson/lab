@@ -132,12 +132,10 @@ sudo usermod -aG kvm $USER
 │   │       └── vision-api.ts        # Venice AI vision API helper
 │   ├── pi/
 │   │   ├── auth.json                # API key config ($VENICE_API_KEY)
-│   │   ├── models.json             # Provider/model definitions
-│   │   ├── settings.json           # Default provider, model, thinking level
+│   │   ├── models.json             # OpenRouter provider (apiKey: $OPENROUTER_API_KEY)
+│   │   ├── settings.json           # Default provider, model, thinking level, browser/searxng config
 │   │   └── extensions/
-│   │       ├── pi-browser/         # Browser automation extension (10 tools, 3 backends)
 │   │       ├── opencode-zen/       # Free Zen models provider extension
-│   │       ├── searxng-search/     # SearXNG web search extension
 │   │       └── venice-ai/          # Venice AI models provider extension
 │   ├── searxng/
 │   │   ├── searxng.service         # systemd unit file (granian WSGI)
@@ -194,6 +192,7 @@ sudo ./init_base.sh
 ```
 
 This will:
+
 - Download the Firecracker kernel
 - Run `debootstrap` for a minimal Debian Trixie install
 - Install SSH, Python 3, Node.js, OpenCode, and common utilities
@@ -225,6 +224,7 @@ sudo ./start.sh my-project
 ```
 
 This will:
+
 - Verify the overlay checksum matches the current base rootfs
 - Set up the network namespace and routing
 - Configure firewall rules for VM access to host services
@@ -283,6 +283,7 @@ To see what files have been modified or created in an overlay (compared to the b
 ```
 
 This shows:
+
 - Changed files
 - Changed directories
 - Deleted files (whiteout entries)
@@ -432,9 +433,9 @@ To configure before building:
 
 **Note:** The `.env` file is gitignored to prevent accidentally committing secrets.
 
-For details on Pi Coding Agent extensions (pi-browser, opencode-zen,
-searxng-search, venice-ai), OpenCode vision tools and skills, the SearXNG
-service configuration, and chroot build scripts, see
+For details on Pi Coding Agent extensions (opencode-zen, venice-ai) and
+the pi-lean-dimension browser/search package, OpenCode vision tools and
+skills, the SearXNG service configuration, and chroot build scripts, see
 [`config/README.md`](config/README.md).
 
 ## Security Considerations
@@ -580,6 +581,7 @@ VM settings, paths, and network parameters.
 ### init_base.sh
 
 Builds the base rootfs image from scratch:
+
 - Downloads Firecracker-compatible kernel
 - Runs debootstrap for Debian Trixie
 - Installs system packages and utilities
@@ -595,6 +597,7 @@ Builds the base rootfs image from scratch:
 ### create_overlay.sh
 
 Creates a new writable overlay on top of the base rootfs:
+
 - Creates an 8G sparse ext4 image
 - Pre-creates overlay directories for overlay-init
 - Records base rootfs checksum for compatibility checking
@@ -606,12 +609,14 @@ Creates a new writable overlay on top of the base rootfs:
 ### extract.sh
 
 Extracts files from an overlay to the host (VM must be stopped):
+
 - Checks and repairs dirty ext4 journals
 - Mounts overlay in read-only mode after journal replay
 - Only extracts files from the overlay layer (not base rootfs)
 - Can list changed files without extracting
 
 **Usage:**
+
 ```bash
 # Extract files
 ./extract.sh <overlay_name> <vm_path> [host_destination]
@@ -624,10 +629,12 @@ Extracts files from an overlay to the host (VM must be stopped):
 ```
 
 **Options:**
+
 - `-l, --list` — List changed files instead of extracting
 - `-y, --yes` — Automatically repair filesystem if dirty
 
 **Examples:**
+
 ```bash
 ./extract.sh my-project /root/output.csv
 ./extract.sh my-project /root/results/ ~/backups/
@@ -637,21 +644,25 @@ Extracts files from an overlay to the host (VM must be stopped):
 ### inject.sh
 
 Copies files from the host into an overlay (VM must be stopped):
+
 - Checks and repairs dirty ext4 journals (automatic)
 - Mounts overlay in read-write mode
 - Sets file ownership (default: root:root)
 - Creates parent directories as needed
 
 **Usage:**
+
 ```bash
 ./inject.sh <overlay_name> <host_path> <vm_path>
 ```
 
 **Options:**
+
 - `-u, --uid <UID>` — Set file owner UID (default: 0)
 - `-g, --gid <GID>` — Set file group GID (default: 0)
 
 **Examples:**
+
 ```bash
 ./inject.sh my-project ./config.yaml /root/config.yaml
 ./inject.sh my-project ./scripts/ /root/scripts/
@@ -663,6 +674,7 @@ Copies files from the host into an overlay (VM must be stopped):
 ### start.sh
 
 Starts a Firecracker VM with the specified overlay:
+
 - Validates overlay compatibility
 - Sets up network namespace with routing/NAT
 - Configures firewall rules for VM access to host services
@@ -676,6 +688,7 @@ Starts a Firecracker VM with the specified overlay:
 ### cleanup.sh
 
 Stops the VM and cleans up all resources:
+
 - Terminates Firecracker/jailer processes
 - Removes network namespace and veth pair
 - Cleans iptables rules

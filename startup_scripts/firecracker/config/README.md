@@ -24,12 +24,10 @@ config/
 │       └── vision-api.ts        # Venice AI vision API helper
 ├── pi/
 │   ├── auth.json                # API key config ($VENICE_API_KEY)
-│   ├── models.json             # Provider/model definitions
-│   ├── settings.json           # Default provider, model, thinking level
+│   ├── models.json             # OpenRouter provider (apiKey: $OPENROUTER_API_KEY)
+│   ├── settings.json           # Default provider, model, thinking level, browser/searxng config
 │   └── extensions/
-│       ├── pi-browser/         # Browser automation extension (10 tools, 3 backends)
 │       ├── opencode-zen/       # Free Zen models provider extension
-│       ├── searxng-search/     # SearXNG web search extension
 │       └── venice-ai/          # Venice AI models provider extension
 ├── searxng/
 │   ├── searxng.service         # systemd unit file (granian WSGI)
@@ -41,42 +39,17 @@ config/
 ## Pi Coding Agent Extensions
 
 The Pi Coding Agent supports extensions that add tools, providers, and
-capabilities. Four extensions are included in `pi/extensions/`.
+capabilities. Two extensions are bundled in-tree under `pi/extensions/`:
+`opencode-zen` and `venice-ai` (detailed below).
 
-### pi-browser — Browser Automation
-
-Full browser automation extension providing 10 tools for web interaction:
-
-| Tool | Description |
-|------|-------------|
-| `browser-navigate` | Navigate to a URL |
-| `browser-snapshot` | Capture accessibility tree snapshot |
-| `browser-click` | Click an element |
-| `browser-type` | Type text into an input field |
-| `browser-scroll` | Scroll the page |
-| `browser-screenshot` | Capture a screenshot |
-| `browser-get-images` | Get all images on the page |
-| `browser-back` | Navigate back |
-| `browser-press` | Press a keyboard key |
-| `browser-console` | Execute JavaScript in the console |
-
-Three browser backends are available, selected automatically or manually:
-
-- **HTTP fetch** — For static pages. Fast, no browser process needed.
-- **Playwright Chromium** — For JavaScript-heavy pages. Full rendering support.
-- **Stealth Firefox** — For bot-protected sites. Uses a Python bridge with
-  anti-detection measures.
-
-Includes a status bar widget and `/browser-status` command for monitoring the
-current browser state.
-
-**Key files:**
-- `index.ts` — Entry point and tool registration
-- `package.json` — Dependencies and metadata
-- `backend/` — Backend implementations (fetch, playwright, stealth, router)
-- `utils/` — Utilities (accessibility-tree, bot-detection, cdp-supervisor,
-  session-manager, url-safety)
-- `stealth_bridge.py` — Python bridge for stealth Firefox mode
+Browser automation and SearXNG web search are now provided by the
+[`pi-lean-dimension`](https://www.npmjs.com/package/pi-lean-dimension) Pi
+package (a suite that installs both `pi-lean-portal` for interactive
+browsing and `pi-lean-search` for SearXNG search, unified under the `/web`
+command). It is installed via `pi install npm:pi-lean-dimension` during the
+base image build, with Playwright Chromium + Firefox binaries installed via
+`npx playwright install --with-deps chromium firefox`. Its configuration lives
+in `settings.json` under the `browser.plugins` and `searxng.url` keys.
 
 ### opencode-zen — Free Zen Models Provider
 
@@ -93,25 +66,6 @@ required — uses the `"public"` key automatically.
 These models are useful for tasks that don't require a paid API or when
 `VENICE_API_KEY` is not configured.
 
-### searxng-search — Web Search via SearXNG
-
-Web search tool for Pi using the local SearXNG instance. Supports rich query
-parameters:
-
-| Parameter | Description | Values |
-|-----------|-------------|--------|
-| `query` | Search query string | Any text |
-| `count` | Number of results (1–100) | Default: 10 |
-| `language` | Result language | ISO 639-1 code |
-| `safesearch` | Filter level | 0 (off), 1 (moderate), 2 (strict) |
-| `time_range` | Time filter | `day`, `week`, `month`, `year` |
-| `category` | Search category | `general`, `news`, `science`, `images`, `videos`, `files`, `it`, `social media` |
-| `engines` | Specific engines | Comma-separated engine names |
-
-Includes a startup health check and `/searxng-status` command. Gracefully
-degrades when SearXNG is unreachable — returns an error message instead of
-crashing.
-
 ### venice-ai — Venice AI Models Provider
 
 Dynamically fetches and registers all Venice AI private text models as a Pi
@@ -124,6 +78,15 @@ model. Supports:
 - **Vision models** — For image understanding tasks
 - **Reasoning models** — For complex reasoning and analysis
 - **Thinking levels** — Configurable reasoning depth per model
+
+### OpenRouter — Custom Provider (models.json)
+
+`pi/models.json` registers an [OpenRouter](https://openrouter.ai/) provider
+using the OpenAI completions API. The API key is read from the
+`OPENROUTER_API_KEY` environment variable (written into the VM via
+`/etc/profile.d/99-vm-env.sh` from `.env`), so no secret is committed to the
+repo. Add the key to `.env` (see `.env.example`). Individual OpenRouter
+models are enabled via `enabledModels` in `settings.json`.
 
 ## OpenCode Vision Tools
 
@@ -194,8 +157,9 @@ providing web search capabilities to both Pi and OpenCode tools.
   - Default search categories and engine configuration
 
 The SearXNG service is expected to be running on the host. Both the
-`searxng-search` Pi extension and the `search.ts` OpenCode tool connect to
-`http://127.0.0.1:8888` for search queries.
+`pi-lean-search` tool (from the `pi-lean-dimension` Pi package) and the
+`search.ts` OpenCode tool connect to `http://127.0.0.1:8888` for search
+queries.
 
 ## Chroot Build Scripts
 

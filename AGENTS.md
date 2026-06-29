@@ -41,21 +41,22 @@ All commands run from `startup_scripts/firecracker/`. Most require `sudo`.
 ### `config/pi/` — Pi Coding Agent
 
 - `auth.json` — API key config (references `$VENICE_API_KEY`)
-- `models.json` — Provider/model definitions (currently local-llama pointing to host llama.cpp)
-- `settings.json` — Default provider, model, thinking level
+- `models.json` — Custom provider definitions (OpenRouter; apiKey references `$OPENROUTER_API_KEY`)
+- `settings.json` — Default provider, model, thinking level, browser plugins, SearXNG URL
 
 #### `config/pi/extensions/` — Pi extensions (loaded into guest VM)
 
-- **pi-browser** — Full browser automation (10 tools: navigate, snapshot, click, type, scroll, screenshot, get-images, back, press, console). Three backends: HTTP fetch (static), Playwright Chromium (JS), stealth Firefox (bot-protected). Status bar integration + `/browser-status` command.
 - **opencode-zen** — Registers 4 free Zen models (deepseek-v4-flash-free, mimo-v2.5-free, nemotron-3-super-free, big-pickle) as a custom provider. No API key needed.
-- **searxng-search** — Web search via local SearXNG instance. Supports query, count, language, safesearch, time_range, category, engines filters. Startup health check + `/searxng-status` command.
 - **venice-ai** — Dynamically fetches and registers all Venice AI private text models as a provider. Requires `VENICE_API_KEY`.
+
+Browser automation and SearXNG web search are provided by the `pi-lean-dimension` Pi package (see below), not an in-tree extension.
 
 #### Pi packages (installed via `pi install`)
 
 - **pi-subagents** — Delegate work to builtin or custom subagents with single-agent, chain, parallel, async, forked-context, and intercom-coordinated workflows.
-- **rpiv-ask-user-question** — Structured multi-choice question tool for clarifying ambiguous requests.
+- **rpiv-ask-user-question** �� Structured multi-choice question tool for clarifying ambiguous requests.
 - **rpiv-todo** — Task list management tool for tracking multi-step progress.
+- **pi-lean-dimension** — Web-tools suite: `pi-lean-portal` (interactive browsing via Playwright Chromium/Firefox, accessibility-tree snapshots, profiles, cookies, guides, `/web` command) + `pi-lean-search` (SearXNG web search). Playwright browser binaries installed via `npx playwright install --with-deps chromium firefox`. Configured via `settings.json` keys `browser.plugins` and `searxng.url`.
 
 ### `config/opencode/` — OpenCode
 
@@ -84,4 +85,4 @@ All commands run from `startup_scripts/firecracker/`. Most require `sudo`.
 
 ## Guest software (pre-installed in base image)
 
-Python 3 + pip + uv, Node.js via nvm (LTS), OpenCode (`opencode-ai@latest` with vision tools and skills), Pi Coding Agent (`@earendil-works/pi-coding-agent` with pi-browser, opencode-zen, searxng-search, and venice-ai extensions), plus Pi packages: pi-subagents, rpiv-ask-user-question, rpiv-todo.
+Python 3 + pip + uv, Node.js via nvm (LTS), OpenCode (`opencode-ai@latest` with vision tools and skills), Pi Coding Agent (`@earendil-works/pi-coding-agent` with opencode-zen and venice-ai in-tree extensions), plus Pi packages: pi-subagents, rpiv-ask-user-question, rpiv-todo, pi-llama-cpp, pi-lens, pi-simplify, pi-lean-dimension (browser + SearXNG search; Playwright Chromium/Firefox binaries installed). API keys via `.env`: `VENICE_API_KEY`, `OPENROUTER_API_KEY`.

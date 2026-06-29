@@ -453,7 +453,8 @@ sudo chroot "$ROOTFS_DIR" /bin/bash -c '
     pi install npm:@juicesharp/rpiv-ask-user-question
     pi install npm:@juicesharp/rpiv-todo
     pi install npm:pi-llama-cpp
-    echo "  Pi packages installed: pi-subagents, rpiv-ask-user-question, rpiv-todo, pi-llama-cpp"
+    pi install npm:pi-lean-dimension
+    echo "  Pi packages installed: pi-subagents, rpiv-ask-user-question, rpiv-todo, pi-llama-cpp, pi-lean-dimension"
 '
 
 # ============================================================
@@ -513,67 +514,20 @@ sudo chroot "$ROOTFS_DIR" /bin/bash -c '
 echo "  SearXNG installed (listening on http://127.0.0.1:8888)"
 
 # ============================================================
-# Playwright + Invisible Playwright
+# Playwright browser binaries (for pi-lean-portal)
 # ============================================================
-echo "Installing Playwright + Invisible Playwright..."
+echo "Installing Playwright browser binaries..."
 
+# pi-lean-dimension (installed above) pulls in pi-lean-portal, which depends on
+# the `playwright` npm package. Playwright does NOT download browser binaries
+# during npm install, so install them explicitly here.
 sudo chroot "$ROOTFS_DIR" /bin/bash -c '
-    # Install Xvfb — needed by invisible_playwright headless mode
-    apt-get install -y xvfb
-
-    # Node.js Playwright (Chromium only) — installed as a local dep of the pi-browser extension
     export NVM_DIR="/root/.nvm"
     [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
-    EXT_DIR="$HOME/.pi/agent/extensions/pi-browser"
-    if [ -f "$EXT_DIR/package.json" ]; then
-        npm install --prefix "$EXT_DIR" 2>/dev/null || true
-    fi
-    # Install Chromium browser binary using the locally-installed playwright
-    if [ -f "$EXT_DIR/node_modules/.bin/playwright" ]; then
-        "$EXT_DIR/node_modules/.bin/playwright" install --with-deps chromium 2>/dev/null || true
-        ln -sf "$EXT_DIR/node_modules/.bin/playwright" /usr/local/bin/playwright
-    fi
+    npx --yes playwright install --with-deps chromium firefox
 '
 
-echo "  Playwright + Chromium installed"
-
-# Copy offline deps into chroot filesystem before installing invisible_playwright
-OFFLINE_DEPS="${SCRIPT_DIR}/offline-deps"
-if [ -d "$OFFLINE_DEPS" ]; then
-	sudo cp -a "$OFFLINE_DEPS/invisible_playwright" "$ROOTFS_DIR/tmp/invisible_playwright_src"
-	if [ -f "$OFFLINE_DEPS/firefox-7-patched.tar.gz" ]; then
-		sudo cp "$OFFLINE_DEPS/firefox-7-patched.tar.gz" "$ROOTFS_DIR/tmp/"
-	fi
-fi
-
-sudo chroot "$ROOTFS_DIR" /bin/bash -c '
-    # Python invisible_playwright (patched Firefox for stealth)
-    /usr/local/bin/uv venv /opt/ipw-pyenv
-
-    # Install from local source copy (offline-deps, no git clone needed)
-    if [ -d /tmp/invisible_playwright_src ]; then
-        cp -a /tmp/invisible_playwright_src /opt/invisible_playwright_src
-        VIRTUAL_ENV=/opt/ipw-pyenv \
-        /usr/local/bin/uv pip install -e /opt/invisible_playwright_src
-
-        # Extract cached Firefox binary instead of fetching from GitHub Releases
-        if [ -f /tmp/firefox-7-patched.tar.gz ]; then
-            mkdir -p /root/.cache/invisible-playwright
-            tar xzf /tmp/firefox-7-patched.tar.gz -C /root/.cache/invisible-playwright/
-        else
-            echo "WARNING: firefox-7-patched.tar.gz not found — stealth Firefox binary will be missing"
-        fi
-
-        # CLI symlink for discoverability
-        ln -sf /opt/ipw-pyenv/bin/invisible_playwright /usr/local/bin/invisible_playwright
-    else
-        echo "NOTE: offline invisible_playwright source not found — skipping stealth Firefox installation"
-        echo "  The pi-browser extension will still work with Node.js Playwright/Chromium"
-        echo "  but stealth mode (Firefox) will not be available."
-    fi
-'
-
-echo "  Invisible Playwright installed"
+echo "  Playwright Chromium + Firefox installed"
 
 # ============================================================
 # Inject environment variables into VM
