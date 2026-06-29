@@ -467,15 +467,17 @@ sudo cp -a "${SCRIPT_DIR}/config/pi" "$ROOTFS_DIR/tmp/pi-config"
 sudo chroot "$ROOTFS_DIR" /bin/bash -c '
     PI_DIR="$HOME/.pi/agent"
     mkdir -p "$PI_DIR/extensions"
+    mkdir -p "$PI_DIR/prompts"
 
     [ -f /tmp/pi-config/auth.json ]     && cp /tmp/pi-config/auth.json "$PI_DIR/"
     [ -f /tmp/pi-config/settings.json ] && cp /tmp/pi-config/settings.json "$PI_DIR/"
     [ -f /tmp/pi-config/models.json ]   && cp /tmp/pi-config/models.json "$PI_DIR/"
     [ -d /tmp/pi-config/extensions ]    && cp -r /tmp/pi-config/extensions/* "$PI_DIR/extensions/"
+    [ -d /tmp/pi-config/prompts ]       && cp -r /tmp/pi-config/prompts/* "$PI_DIR/prompts/"
 '
 
 sudo rm -rf "$ROOTFS_DIR/tmp/pi-config"
-echo "  Pi config, auth, models, and extensions installed"
+echo "  Pi config, auth, models, extensions, and prompts installed"
 
 # ============================================================
 # Install SearXNG (metasearch engine for agent web search)
