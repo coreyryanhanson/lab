@@ -23,19 +23,12 @@ const AGENTS_FILES = ["AGENTS.override.md", "AGENTS.md", "AGENTS.MD"];
 // and avoids surfacing build/vendor noise.
 // ponytail: fixed skip-set; add entries here if a repo's generated tree is huge.
 const SKIP_DIRS = new Set([
-	".git",
-	".hg",
-	".svn",
 	"node_modules",
 	"dist",
 	"build",
 	"target",
 	"out",
 	"coverage",
-	".next",
-	".turbo",
-	".parcel-cache",
-	".cache",
 ]);
 
 // Split the template into named blocks delimited by `---NAME---` lines, so
@@ -143,7 +136,7 @@ export default function agentsMdInitExtension(pi: ExtensionAPI) {
 				sections.push(
 					BLOCKS.LAYERING_CHILDREN.replaceAll(
 						"${CHILD_LIST}",
-						children.map((p) => `- ${relative(cwd, p) || p}`).join("\n"),
+						children.map((p) => `- ${relative(cwd, p)}`).join("\n"),
 					),
 				);
 			}
