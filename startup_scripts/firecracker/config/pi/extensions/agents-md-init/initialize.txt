@@ -1,6 +1,8 @@
 ---BASE---
 ${VERB} `AGENTS.md` for this repository.
 
+Scope is `${path}` and everything under it. Author for this level only: Pi loads ancestor `AGENTS.md` files into context separately, so don't hold back content here because a parent might already cover it. Overlap with parents is fine; deduping the parent is a separate later step, not this one.
+
 The goal is a compact instruction file that helps future sessions avoid mistakes and ramp up quickly. Every line should answer: "Would an agent likely miss this without help?" If not, leave it out.
 
 User-provided focus or constraints (honor these):
