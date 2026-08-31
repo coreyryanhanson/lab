@@ -435,7 +435,11 @@ export default async function (pi: ExtensionAPI) {
 		// which can overflow. Always set max_tokens explicitly.
 
 		if (!("max_tokens" in payload) && !("max_completion_tokens" in payload)) {
-			return { ...payload, max_tokens: safeMax };
+			return {
+				...payload,
+				max_tokens: safeMax,
+				venice_parameters: { include_venice_system_prompt: false },
+			};
 		}
 
 		// --- Case 2: pi set max_tokens explicitly ---
@@ -448,7 +452,11 @@ export default async function (pi: ExtensionAPI) {
 			(payload.max_completion_tokens as number) ??
 			meta.maxTokens;
 
-		if (currentMax <= safeMax) return;
+		if (currentMax <= safeMax)
+			return {
+				...payload,
+				venice_parameters: { include_venice_system_prompt: false },
+			};
 
 		const updated = {
 			...payload,
@@ -457,7 +465,10 @@ export default async function (pi: ExtensionAPI) {
 		if ("max_completion_tokens" in updated) {
 			delete (updated as Record<string, unknown>).max_completion_tokens;
 		}
-		return updated;
+		return {
+			...updated,
+			venice_parameters: { include_venice_system_prompt: false },
+		};
 	});
 
 	// -----------------------------------------------------------------------
