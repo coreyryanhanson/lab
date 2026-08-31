@@ -110,6 +110,29 @@ const MODELS_REQUIRING_SYSTEM_ROLE: ReadonlySet<string> = new Set([
 ]);
 
 // ---------------------------------------------------------------------------
+// Per-model tool-definition limits.
+//
+// Venice enforces a server-side cap on the number of entries in the `tools`
+// array for some models. When exceeded, Venice returns HTTP 400 with body
+// {"details":"This model supports at most N tool definitions per request
+// (received M). Reduce the number of entries in the `tools` array.",
+// "error":"Invalid request parameters"}.
+//
+// The OpenAI SDK pi uses only keeps `errorResponse['error']` (the string
+// "Invalid request parameters") and drops the explanatory `details` field,
+// so pi surfaces an opaque `400 "Invalid request parameters"` with no hint
+// that tool count is the cause. We can't recover the body from event hooks
+// (it's lost before `after_provider_response`/`message_end` fire), so we
+// detect the overflow pre-flight and surface the exact reason via ui.notify.
+//
+// The Venice /models API does not expose these limits, so this map is
+// empirical. Add model IDs here as you discover them.
+// ---------------------------------------------------------------------------
+const MODEL_TOOL_LIMITS: ReadonlyMap<string, number> = new Map([
+	["google-gemma-4-31b-it", 20],
+]);
+
+// ---------------------------------------------------------------------------
 // Model context window lookup (populated during model fetch).
 // Used by before_provider_request to clamp max_tokens.
 // ---------------------------------------------------------------------------
@@ -375,6 +398,53 @@ export default async function (pi: ExtensionAPI) {
 				ctx.ui.notify("Venice debug logging OFF", "info");
 			}
 		},
+	});
+
+	// -----------------------------------------------------------------------
+	// before_provider_request — Surface Venice's tool-count 400 pre-flight.
+	//
+	// Runs before the max_tokens clamp and debug handlers. When the outgoing
+	// payload carries more tool definitions than a model's known limit, emit a
+	// clear notify naming the model, limit, and count. The request still goes
+	// out (we can't abort from here), so pi will also show its opaque 400 —
+	// but this notify gives the real reason.
+	// -----------------------------------------------------------------------
+
+	let toolLimitNotifiedThisTurn = false;
+
+	pi.on("before_provider_request", (event, ctx) => {
+		const payload = event.payload as Record<string, unknown> | undefined;
+		if (!payload || typeof payload !== "object") return;
+
+		const modelId = payload.model as string | undefined;
+		if (!modelId) return;
+
+		const limit = MODEL_TOOL_LIMITS.get(modelId);
+		if (limit === undefined) return;
+
+		const tools = payload.tools;
+		const toolCount = Array.isArray(tools) ? tools.length : 0;
+		if (toolCount <= limit) return;
+
+		// Avoid spamming on pi's automatic retries within the same turn.
+		if (toolLimitNotifiedThisTurn) return;
+		toolLimitNotifiedThisTurn = true;
+		// Reset at turn end so the next user turn can notify again.
+		pi.on("turn_end", () => {
+			toolLimitNotifiedThisTurn = false;
+		});
+
+		const detail = `This model supports at most ${limit} tool definitions per request (received ${toolCount}). Reduce the number of entries in the \`tools\` array.`;
+
+		if (debugEnabled)
+			logEvent("tool_limit_exceeded", { modelId, limit, toolCount });
+
+		ctx.ui.notify(
+			`Venice model "${modelId}" rejects requests with more than ${limit} tools (this request sends ${toolCount}).\n` +
+				`Venice error: ${detail}\n` +
+				`Switch to a model without this limit, or disable extensions/skills to send ≤ ${limit} tools.`,
+			"error",
+		);
 	});
 
 	// -----------------------------------------------------------------------
