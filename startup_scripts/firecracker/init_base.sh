@@ -5,10 +5,25 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/config.sh"
 source "${SCRIPT_DIR}/.env"
 
+# Substitute SearXNG host/port from .env into systemd service template
+sed -i "s/SEARXNG_HOST_PLACEHOLDER/${SEARXNG_HOST}/g" "${SCRIPT_DIR}/config/searxng/searxng.service"
+sed -i "s/SEARXNG_PORT_PLACEHOLDER/${SEARXNG_PORT}/g" "${SCRIPT_DIR}/config/searxng/searxng.service"
+
 ARCH="$(uname -m)"
 ROOTFS_DIR="${SCRIPT_DIR}/base/debian-trixie-rootfs"
 ROOTFS_IMG="${SCRIPT_DIR}/base/rootfs.ext4"
 KERNEL_DEST="${SCRIPT_DIR}/images/vmlinux-6.1.155"
+
+# Cleanup trap: unmount virtual filesystems on script exit or error
+# Placed here so ROOTFS_DIR is already defined (avoid unmounting host /proc)
+cleanup_mounts() {
+	local rc=$?
+	if [ -n "${ROOTFS_DIR}" ]; then
+		sudo umount "${ROOTFS_DIR}/proc" "${ROOTFS_DIR}/sys" "${ROOTFS_DIR}/dev" 2>/dev/null || true
+	fi
+	exit $rc
+}
+trap cleanup_mounts EXIT
 
 echo "========================================"
 echo "Building Firecracker Base Image"
@@ -18,28 +33,28 @@ echo "========================================"
 # Download kernel
 # ============================================================
 if [ ! -f "$KERNEL_DEST" ]; then
-    echo "Downloading kernel..."
-    release_url="https://github.com/firecracker-microvm/firecracker/releases"
-    latest_version=$(basename $(curl -fsSLI -o /dev/null -w %{url_effective} ${release_url}/latest))
-    CI_VERSION=${latest_version%.*}
-    latest_kernel_key=$(curl "http://spec.ccfc.min.s3.amazonaws.com/?prefix=firecracker-ci/$CI_VERSION/$ARCH/vmlinux-&list-type=2" \
-        | grep -oP "(?<=<Key>)(firecracker-ci/$CI_VERSION/$ARCH/vmlinux-[0-9]+\.[0-9]+\.[0-9]{1,3})(?=</Key>)" \
-        | sort -V | tail -1)
+	echo "Downloading kernel..."
+	release_url="https://github.com/firecracker-microvm/firecracker/releases"
+	latest_version=$(basename $(curl -fsSLI -o /dev/null -w %{url_effective} ${release_url}/latest))
+	CI_VERSION=${latest_version%.*}
+	latest_kernel_key=$(curl "http://spec.ccfc.min.s3.amazonaws.com/?prefix=firecracker-ci/$CI_VERSION/$ARCH/vmlinux-&list-type=2" |
+		grep -oP "(?<=<Key>)(firecracker-ci/$CI_VERSION/$ARCH/vmlinux-[0-9]+\.[0-9]+\.[0-9]{1,3})(?=</Key>)" |
+		sort -V | tail -1)
 
-    wget -O "$KERNEL_DEST" "https://s3.amazonaws.com/spec.ccfc.min/${latest_kernel_key}"
+	wget -O "$KERNEL_DEST" "https://s3.amazonaws.com/spec.ccfc.min/${latest_kernel_key}"
 else
-    echo "Kernel already exists at $KERNEL_DEST"
+	echo "Kernel already exists at $KERNEL_DEST"
 fi
 
 # ============================================================
 # Create rootfs with debootstrap
 # ============================================================
 if [ ! -d "$ROOTFS_DIR" ]; then
-    echo "Running debootstrap (this takes a few minutes)..."
-    sudo apt-get install -y debootstrap
-    sudo debootstrap --arch=amd64 trixie "$ROOTFS_DIR" http://deb.debian.org/debian
+	echo "Running debootstrap (this takes a few minutes)..."
+	sudo apt-get install -y debootstrap
+	sudo debootstrap --arch=amd64 trixie "$ROOTFS_DIR" http://deb.debian.org/debian
 else
-    echo "Rootfs directory exists at $ROOTFS_DIR"
+	echo "Rootfs directory exists at $ROOTFS_DIR"
 fi
 
 # ============================================================
@@ -53,12 +68,16 @@ sudo mount -t proc proc "$ROOTFS_DIR/proc"
 sudo mount -t sysfs sysfs "$ROOTFS_DIR/sys"
 sudo mount -t devtmpfs devtmpfs "$ROOTFS_DIR/dev"
 
+# Bundle tmux config into the VM
+sudo cp "${SCRIPT_DIR}/config/tmux.conf" "$ROOTFS_DIR/root/.tmux.conf"
+
 sudo chroot "$ROOTFS_DIR" /bin/bash -c '
     # Set root password
     echo "root:root" | chpasswd
 
     # Set hostname
     echo "firecracker" > /etc/hostname
+    echo "127.0.1.1 firecracker" >> /etc/hosts
 
     # Configure serial console
     systemctl enable serial-getty@ttyS0.service 2>/dev/null || true
@@ -74,7 +93,9 @@ sudo chroot "$ROOTFS_DIR" /bin/bash -c '
         ca-certificates \
         e2fsprogs \
         gnupg \
-        locales
+        locales \
+        libgtk-3-0 \
+        tmux
 
     # Generate locale
     sed -i "s/^# *en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/" /etc/locale.gen
@@ -82,6 +103,16 @@ sudo chroot "$ROOTFS_DIR" /bin/bash -c '
     echo "LANG=en_US.UTF-8" > /etc/default/locale
 
     systemctl enable ssh
+
+    # Set tmux as default terminal
+    cat >> /root/.bashrc << 'TMUX_PROFILE'
+
+# Auto-start tmux as the default terminal
+case "${TERM_PROGRAM}" in
+  tmux) ;; # already in tmux, do nothing
+  *) tmux attach -t default 2>/dev/null || tmux new -s default ;;
+esac
+TMUX_PROFILE
 
     # Allow root login
     sed -i "s/^#*PermitRootLogin.*/PermitRootLogin prohibit-password/" /etc/ssh/sshd_config
@@ -106,34 +137,17 @@ sudo chroot "$ROOTFS_DIR" /bin/bash -c '
 # ============================================================
 echo "Installing nvm, Node.js, and OpenCode..."
 
-sudo chroot "$ROOTFS_DIR" /bin/bash -c '
-    # Install nvm
-    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
-
-    # Install latest LTS Node.js
-    export NVM_DIR="/root/.nvm"
-    [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
-    nvm install --lts
-
-    # Explicitly set default alias (critical for non-interactive shells)
-    nvm alias default "$(nvm current)"
-
-    # Install OpenCode globally
-    npm install -g opencode-ai@latest
-
-    # Add nvm to profile for all users
-    cat >> /etc/profile.d/nvm.sh << "NVMEOF"
-export NVM_DIR="/root/.nvm"
-[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
-NVMEOF
-'
+# Copy and run the nvm/Node.js install script inside the chroot
+sudo cp "${SCRIPT_DIR}/config/chroot-scripts/install-nvm-node.sh" "${ROOTFS_DIR}/tmp/"
+sudo chroot "$ROOTFS_DIR" /bin/bash /tmp/install-nvm-node.sh
+sudo rm -f "${ROOTFS_DIR}/tmp/install-nvm-node.sh"
 
 # ============================================================
 # Add overlay-init script
 # ============================================================
 echo "Adding overlay-init script..."
 
-sudo tee "$ROOTFS_DIR/sbin/overlay-init" > /dev/null << 'OVERLAY_INIT'
+sudo tee "$ROOTFS_DIR/sbin/overlay-init" >/dev/null <<'OVERLAY_INIT'
 #!/bin/sh
 # OverlayFS init script for Firecracker
 # Requires: /overlay, /rom, /mnt directories in base rootfs
@@ -296,7 +310,7 @@ sudo mkdir -p "$ROOTFS_DIR/mnt"
 # ============================================================
 echo "Configuring network auto-setup..."
 
-sudo tee "$ROOTFS_DIR/usr/local/bin/fcnet-setup.sh" > /dev/null << 'NETSCRIPT'
+sudo tee "$ROOTFS_DIR/usr/local/bin/fcnet-setup.sh" >/dev/null <<'NETSCRIPT'
 #!/bin/bash
 # Firecracker network auto-configuration
 # Reads all settings from kernel boot args:
@@ -361,7 +375,7 @@ NETSCRIPT
 
 sudo chmod +x "$ROOTFS_DIR/usr/local/bin/fcnet-setup.sh"
 
-sudo tee "$ROOTFS_DIR/etc/systemd/system/fcnet-setup.service" > /dev/null << 'SERVICE'
+sudo tee "$ROOTFS_DIR/etc/systemd/system/fcnet-setup.service" >/dev/null <<'SERVICE'
 [Unit]
 Description=Firecracker Network Setup
 After=network.target local-fs.target
@@ -378,7 +392,7 @@ WantedBy=multi-user.target
 SERVICE
 
 sudo ln -sf /etc/systemd/system/fcnet-setup.service \
-    "$ROOTFS_DIR/etc/systemd/system/multi-user.target.wants/fcnet-setup.service"
+	"$ROOTFS_DIR/etc/systemd/system/multi-user.target.wants/fcnet-setup.service"
 
 # ============================================================
 # Generate SSH keys
@@ -386,8 +400,8 @@ sudo ln -sf /etc/systemd/system/fcnet-setup.service \
 echo "Setting up SSH access..."
 
 if [ ! -f "${KEY_DIR}/debian-trixie.id_rsa" ]; then
-    mkdir -p "${KEY_DIR}"
-    ssh-keygen -f "${KEY_DIR}/debian-trixie.id_rsa" -N ""
+	mkdir -p "${KEY_DIR}"
+	ssh-keygen -f "${KEY_DIR}/debian-trixie.id_rsa" -N ""
 fi
 
 sudo mkdir -p "$ROOTFS_DIR/root/.ssh"
@@ -413,6 +427,8 @@ sudo chroot "$ROOTFS_DIR" /bin/bash -c '
 
 # Install npm dependencies for tools (e.g. @opencode-ai/plugin)
 sudo chroot "$ROOTFS_DIR" /bin/bash -c '
+    export NVM_DIR="/root/.nvm"
+    [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
     cd /root/.config/opencode && [ -f package.json ] && npm install 2>/dev/null || true
 '
 
@@ -431,6 +447,14 @@ sudo chroot "$ROOTFS_DIR" /bin/bash -c '
     [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
     npm install -g --ignore-scripts @earendil-works/pi-coding-agent
     echo "  Pi agent installed: $(pi --version 2>/dev/null || true)"
+
+    # Install Pi packages (subagents, tools, skills)
+    pi install npm:pi-subagents
+    pi install npm:@juicesharp/rpiv-ask-user-question
+    pi install npm:@juicesharp/rpiv-todo
+    pi install npm:pi-llama-cpp
+    pi install npm:pi-lean-dimension
+    echo "  Pi packages installed: pi-subagents, rpiv-ask-user-question, rpiv-todo, pi-llama-cpp, pi-lean-dimension"
 '
 
 # ============================================================
@@ -443,15 +467,69 @@ sudo cp -a "${SCRIPT_DIR}/config/pi" "$ROOTFS_DIR/tmp/pi-config"
 sudo chroot "$ROOTFS_DIR" /bin/bash -c '
     PI_DIR="$HOME/.pi/agent"
     mkdir -p "$PI_DIR/extensions"
+    mkdir -p "$PI_DIR/prompts"
 
     [ -f /tmp/pi-config/auth.json ]     && cp /tmp/pi-config/auth.json "$PI_DIR/"
     [ -f /tmp/pi-config/settings.json ] && cp /tmp/pi-config/settings.json "$PI_DIR/"
     [ -f /tmp/pi-config/models.json ]   && cp /tmp/pi-config/models.json "$PI_DIR/"
     [ -d /tmp/pi-config/extensions ]    && cp -r /tmp/pi-config/extensions/* "$PI_DIR/extensions/"
+    [ -d /tmp/pi-config/prompts ]       && cp -r /tmp/pi-config/prompts/* "$PI_DIR/prompts/"
 '
 
 sudo rm -rf "$ROOTFS_DIR/tmp/pi-config"
-echo "  Pi config, auth, models, and extensions installed"
+echo "  Pi config, auth, models, extensions, and prompts installed"
+
+# ============================================================
+# Install SearXNG (metasearch engine for agent web search)
+# ============================================================
+echo "Installing SearXNG..."
+
+sudo mkdir -p "$ROOTFS_DIR/etc/searxng"
+sudo cp "${SCRIPT_DIR}/config/searxng/settings.yml" "$ROOTFS_DIR/etc/searxng/"
+sudo cp "${SCRIPT_DIR}/config/searxng/searxng.service" "$ROOTFS_DIR/etc/systemd/system/"
+
+sudo chroot "$ROOTFS_DIR" /bin/bash -c '
+    # Create searxng system user
+    useradd --system --shell /bin/bash --home-dir /usr/local/searxng searxng
+
+    # Clone SearXNG source
+    git clone --depth 1 https://github.com/searxng/searxng.git /usr/local/searxng/searxng-src
+
+    # Create Python venv with uv and install SearXNG + Granian
+    /usr/local/bin/uv venv /usr/local/searxng/searx-pyenv
+    # Build deps must be installed before editable install (searx/__init__.py imports msgspec at setup time)
+    VIRTUAL_ENV=/usr/local/searxng/searx-pyenv /usr/local/bin/uv pip install setuptools wheel msgspec pyyaml typing-extensions pybind11
+    VIRTUAL_ENV=/usr/local/searxng/searx-pyenv /usr/local/bin/uv pip install -e /usr/local/searxng/searxng-src --no-build-isolation
+    VIRTUAL_ENV=/usr/local/searxng/searx-pyenv /usr/local/bin/uv pip install granian
+
+    # Generate a random secret key
+    SEARXNG_SECRET=$(openssl rand -hex 32)
+    sed -i "s/ultrasecretkey/$SEARXNG_SECRET/g" /etc/searxng/settings.yml
+
+    # Fix permissions
+    chown -R searxng:searxng /usr/local/searxng /etc/searxng
+
+    # Enable service
+    systemctl enable searxng
+'
+
+echo "  SearXNG installed (listening on http://127.0.0.1:8888)"
+
+# ============================================================
+# Playwright browser binaries (for pi-lean-portal)
+# ============================================================
+echo "Installing Playwright browser binaries..."
+
+# pi-lean-dimension (installed above) pulls in pi-lean-portal, which depends on
+# the `playwright` npm package. Playwright does NOT download browser binaries
+# during npm install, so install them explicitly here.
+sudo chroot "$ROOTFS_DIR" /bin/bash -c '
+    export NVM_DIR="/root/.nvm"
+    [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+    npx --yes playwright install --with-deps chromium firefox
+'
+
+echo "  Playwright Chromium + Firefox installed"
 
 # ============================================================
 # Inject environment variables into VM
@@ -459,8 +537,8 @@ echo "  Pi config, auth, models, and extensions installed"
 echo "Injecting environment variables into VM..."
 
 # Write all non-comment lines from .env as exports into a profile script
-sed -n '/^[A-Z_]/s/^/export /p' "${SCRIPT_DIR}/.env" | \
-    sudo tee "$ROOTFS_DIR/etc/profile.d/99-vm-env.sh" > /dev/null
+sed -n '/^[A-Z_]/s/^/export /p' "${SCRIPT_DIR}/.env" |
+	sudo tee "$ROOTFS_DIR/etc/profile.d/99-vm-env.sh" >/dev/null
 sudo chmod 644 "$ROOTFS_DIR/etc/profile.d/99-vm-env.sh"
 echo "  Environment variables written to /etc/profile.d/99-vm-env.sh"
 

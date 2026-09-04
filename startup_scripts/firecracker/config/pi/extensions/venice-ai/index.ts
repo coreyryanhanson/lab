@@ -1,4 +1,13 @@
-import type { ExtensionAPI, ProviderModelConfig } from "@earendil-works/pi-coding-agent";
+import type {
+	ExtensionAPI,
+	ProviderModelConfig,
+} from "@earendil-works/pi-coding-agent";
+import { appendFileSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+
+// ---------------------------------------------------------------------------
+// Venice API types
+// ---------------------------------------------------------------------------
 
 interface VeniceModel {
 	id: string;
@@ -21,6 +30,7 @@ interface VeniceModel {
 			supportsMultipleImages?: boolean;
 			maxImages?: number;
 			supportsResponseSchema?: boolean;
+			supportsE2EE?: boolean;
 		};
 		pricing?: {
 			input?: { usd?: number; diem?: number };
@@ -41,14 +51,114 @@ interface VeniceModelsResponse {
 	type: string;
 }
 
-async function fetchVeniceModels(): Promise<ProviderModelConfig[]> {
+// ---------------------------------------------------------------------------
+// Debug logging
+// ---------------------------------------------------------------------------
+
+const DEBUG_DIR = "/tmp/venice-debug";
+let debugEnabled = false;
+let currentSessionDir: string | null = null;
+let requestCounter = 0;
+
+/** Create a timestamped session dir and write an initial marker. */
+function initDebugSession(): string {
+	const ts = new Date().toISOString().replace(/[:.]/g, "-");
+	const dir = join(DEBUG_DIR, ts);
+	mkdirSync(dir, { recursive: true });
+	writeFileSync(join(dir, ".session"), `started: ${ts}\n`, "utf8");
+	return dir;
+}
+
+/** Append a line to the session's event log. */
+function logEvent(event: string, data: unknown): void {
+	if (!currentSessionDir) {
+		currentSessionDir = initDebugSession();
+	}
+	const file = join(currentSessionDir, "events.ndjson");
+	appendFileSync(
+		file,
+		JSON.stringify({ ts: Date.now(), event, data }) + "\n",
+		"utf8",
+	);
+}
+
+/** Write a standalone JSON file in the session dir. */
+function logFile(name: string, data: unknown): void {
+	if (!currentSessionDir) {
+		currentSessionDir = initDebugSession();
+	}
+	writeFileSync(
+		join(currentSessionDir, name),
+		JSON.stringify(data, null, 2),
+		"utf8",
+	);
+}
+
+// ---------------------------------------------------------------------------
+// Models that do NOT support the OpenAI `developer` role.
+//
+// Venice returns HTTP 200 with a non-standard SSE error chunk for these models
+// when `developer` is used, which pi's stream parser sees as "Stream ended
+// without finish_reason". Setting supportsDeveloperRole: false tells pi to
+// send `system` instead.
+//
+// Add model IDs here as you discover them. Models NOT in this set default to
+// whatever pi's auto-detection decides (usually `developer` for reasoning models).
+// ---------------------------------------------------------------------------
+const MODELS_REQUIRING_SYSTEM_ROLE: ReadonlySet<string> = new Set([
+	"qwen3-6-27b",
+]);
+
+// ---------------------------------------------------------------------------
+// Per-model tool-definition limits.
+//
+// Venice enforces a server-side cap on the number of entries in the `tools`
+// array for some models. When exceeded, Venice returns HTTP 400 with body
+// {"details":"This model supports at most N tool definitions per request
+// (received M). Reduce the number of entries in the `tools` array.",
+// "error":"Invalid request parameters"}.
+//
+// The OpenAI SDK pi uses only keeps `errorResponse['error']` (the string
+// "Invalid request parameters") and drops the explanatory `details` field,
+// so pi surfaces an opaque `400 "Invalid request parameters"` with no hint
+// that tool count is the cause. We can't recover the body from event hooks
+// (it's lost before `after_provider_response`/`message_end` fire), so we
+// detect the overflow pre-flight and surface the exact reason via ui.notify.
+//
+// The Venice /models API does not expose these limits, so this map is
+// empirical. Add model IDs here as you discover them.
+// ---------------------------------------------------------------------------
+const MODEL_TOOL_LIMITS: ReadonlyMap<string, number> = new Map([
+	["google-gemma-4-31b-it", 20],
+]);
+
+// ---------------------------------------------------------------------------
+// Model context window lookup (populated during model fetch).
+// Used by before_provider_request to clamp max_tokens.
+// ---------------------------------------------------------------------------
+const MODEL_METADATA: Map<
+	string,
+	{ contextWindow: number; maxTokens: number }
+> = new Map();
+
+// ---------------------------------------------------------------------------
+// Model fetching
+// ---------------------------------------------------------------------------
+
+async function fetchVeniceModels(): Promise<{
+	openai: ProviderModelConfig[];
+	e2ee: ProviderModelConfig[];
+}> {
 	const response = await fetch("https://api.venice.ai/api/v1/models?type=text");
 	if (!response.ok) {
 		throw new Error(`Venice models API returned ${response.status}`);
 	}
 
 	const data: VeniceModelsResponse = await response.json();
-	const models: ProviderModelConfig[] = [];
+	// Common filters applied to both providers:
+	// - text-only models, not offline, private privacy tier, not Grok
+	const openaiModels: ProviderModelConfig[] = [];
+	const e2eeModels: ProviderModelConfig[] = [];
 
 	for (const m of data.data) {
 		if (m.type !== "text") continue;
@@ -60,12 +170,25 @@ async function fetchVeniceModels(): Promise<ProviderModelConfig[]> {
 		const pricing = spec.pricing ?? {};
 		const caps = spec.capabilities ?? {};
 
-		models.push({
+		const ctxWindow = spec.availableContextTokens ?? m.context_length ?? 32768;
+		const maxOut = spec.maxCompletionTokens ?? 4096;
+
+		const config: ProviderModelConfig = {
 			id: m.id,
 			name: spec.name ?? m.id,
 			reasoning: caps.supportsReasoning ?? false,
+			// Venice accepts: "none", "low", "medium", "high"
+			// Map pi levels to valid Venice reasoning_effort values.
+			// "minimal" and "xhigh" are NOT valid — they map to nearest valid.
 			thinkingLevelMap: caps.supportsReasoningEffort
-				? { minimal: "minimal", low: "low", medium: "medium", high: "high", xhigh: "xhigh" }
+				? {
+						off: "none",
+						minimal: "none",
+						low: "low",
+						medium: "medium",
+						high: "high",
+						xhigh: "high",
+					}
 				: undefined,
 			input: caps.supportsVision ? ["text", "image"] : ["text"],
 			cost: {
@@ -74,34 +197,431 @@ async function fetchVeniceModels(): Promise<ProviderModelConfig[]> {
 				cacheRead: pricing.cache_input?.usd ?? 0,
 				cacheWrite: pricing.cache_write?.usd ?? 0,
 			},
-			contextWindow: spec.availableContextTokens ?? m.context_length ?? 32768,
-			maxTokens: spec.maxCompletionTokens ?? 4096,
+			contextWindow: ctxWindow,
+			maxTokens: maxOut,
+			// Models that don't support the `developer` role must be overridden
+			// so pi sends `system` instead. Without this, Venice returns an
+			// empty SSE stream with a validation error, causing pi to throw
+			// "Stream ended without finish_reason".
+			...(MODELS_REQUIRING_SYSTEM_ROLE.has(m.id)
+				? { compat: { supportsDeveloperRole: false } }
+				: {}),
+		};
+
+		// Populate model metadata lookup for before_provider_request
+		MODEL_METADATA.set(m.id, {
+			contextWindow: ctxWindow,
+			maxTokens: maxOut,
 		});
+
+		if (caps.supportsE2EE) {
+			e2eeModels.push(config);
+		} else {
+			openaiModels.push(config);
+		}
 	}
 
-	return models;
+	return { openai: openaiModels, e2ee: e2eeModels };
 }
 
+// ---------------------------------------------------------------------------
+// Token estimation helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Estimate the number of input tokens from a chat completion payload.
+ *
+ * We deliberately overestimate input tokens so max_tokens leaves
+ * enough room in the context window. An overestimate is SAFE — it
+ * gives the API more room than needed.
+ *
+ * Heuristics:
+ *   1 token ≈ 2 characters  — worst-case dense code/symbols
+ *   +8 tokens per message for role/metadata overhead
+ *
+ * Real-world ratios are 1:3 to 1:5 for mixed text+code, so this
+ * overestimates input by 50-150%, which translates to a generous
+ * safety buffer for max_tokens.
+ */
+function estimateInputTokensFromPayload(
+	payload: Record<string, unknown>,
+): number {
+	const messages = payload.messages as
+		| Array<{ role: string; content: unknown }>
+		| undefined;
+	if (!messages || !Array.isArray(messages)) return 0;
+
+	let totalChars = 0;
+	for (const msg of messages) {
+		if (typeof msg.content === "string") {
+			totalChars += msg.content.length;
+		} else if (Array.isArray(msg.content)) {
+			for (const part of msg.content as Array<Record<string, unknown>>) {
+				if (part.type === "text" && typeof part.text === "string") {
+					totalChars += part.text.length;
+				}
+				// Ignore image content blocks — underestimating image token
+				// overhead is safe (more room for max_tokens = safer).
+			}
+		}
+		// Per-message overhead: role string, metadata, spacing (~8 tokens)
+		totalChars += 16;
+	}
+
+	// 1 token per 2 characters: always overestimates since even dense code
+	// is at least ~2 chars/token and typical text is 4-5 chars/token.
+	return Math.ceil(totalChars / 2);
+}
+
+// ---------------------------------------------------------------------------
+// Extension entry point
+// ---------------------------------------------------------------------------
+
 export default async function (pi: ExtensionAPI) {
-	let models: ProviderModelConfig[];
+	let models: { openai: ProviderModelConfig[]; e2ee: ProviderModelConfig[] };
 
 	try {
 		models = await fetchVeniceModels();
 	} catch (error) {
-		console.warn(`[venice-ai] Failed to fetch models: ${error instanceof Error ? error.message : String(error)}`);
+		console.warn(
+			`[venice-ai] Failed to fetch models: ${error instanceof Error ? error.message : String(error)}`,
+		);
 		return;
 	}
 
-	if (models.length === 0) {
+	if (models.openai.length === 0 && models.e2ee.length === 0) {
 		console.warn("[venice-ai] No text models returned from Venice API");
 		return;
 	}
 
+	// Provider for OpenAI-compatible private models
 	pi.registerProvider("venice", {
 		name: "Venice AI",
 		baseUrl: "https://api.venice.ai/api/v1",
 		apiKey: "$VENICE_API_KEY",
 		api: "openai-completions",
-		models,
+		models: models.openai,
+	});
+
+	// Provider for E2EE (end-to-end encrypted) models.
+	// Currently disabled: E2EE requires a custom streamSimple handler with
+	// secp256k1 key exchange, TEE attestation, and AES-256-GCM message
+	// encryption/decryption — not yet implemented.
+	// TODO: Implement tee-handler.ts and wire it up to enable these models.
+	pi.registerProvider("venice-e2ee", {});
+
+	// -----------------------------------------------------------------------
+	// /debugvenice — Toggle debug logging for Venice provider
+	// -----------------------------------------------------------------------
+	//
+	// Uses pi's event system (before_provider_request, after_provider_response,
+	// message_end) to capture debug data WITHOUT modifying the streaming
+	// pipeline. This is safe — it cannot break tool calling because it only
+	// observes events, never replaces the stream handler.
+	//
+	// Logs go to /tmp/venice-debug/<timestamp-session>/ and include:
+	//   request-payload.json  — Full request body sent to Venice
+	//   response-headers.json  — HTTP status + response headers
+	//   message-summary.json   — Final message state (usage, stopReason, error)
+	//   events.ndjson          — Timestamped event stream (all debug events)
+	//
+	// Usage: /debugvenice          — Toggle on/off
+	//        /debugvenice status   — Show current state and log location
+	//        /debugvenice open     — Show the debug log directory path
+	//        /debugvenice latest   — Show the most recent request payload
+
+	pi.registerCommand("debugvenice", {
+		description: "Toggle Venice debug logging (captures request/response data)",
+		handler: async (args, ctx) => {
+			const sub = (args ?? "").trim().toLowerCase();
+
+			if (sub === "status") {
+				if (!debugEnabled) {
+					ctx.ui.notify("Venice debug: OFF", "info");
+				} else {
+					ctx.ui.notify(
+						`Venice debug: ON\nSession dir: ${currentSessionDir ?? "(none yet)"}`,
+						"info",
+					);
+				}
+				return;
+			}
+
+			if (sub === "open") {
+				if (!currentSessionDir) {
+					ctx.ui.notify("No debug session yet — toggle on first", "warning");
+					return;
+				}
+				ctx.ui.notify(`Debug logs: ${currentSessionDir}`, "info");
+				return;
+			}
+
+			if (sub === "latest") {
+				if (!currentSessionDir) {
+					ctx.ui.notify("No debug session yet — toggle on first", "warning");
+					return;
+				}
+				try {
+					const files = readdirSync(currentSessionDir)
+						.filter(
+							(f) => f.startsWith("request-payload-") && f.endsWith(".json"),
+						)
+						.sort();
+					if (files.length === 0) {
+						ctx.ui.notify("No request payloads captured yet", "info");
+						return;
+					}
+					const latest = files[files.length - 1]!;
+					ctx.ui.notify(
+						`Latest payload: ${join(currentSessionDir, latest)}`,
+						"info",
+					);
+				} catch {
+					ctx.ui.notify("Could not read debug directory", "error");
+				}
+				return;
+			}
+
+			// Toggle
+			debugEnabled = !debugEnabled;
+			requestCounter = 0;
+
+			if (debugEnabled) {
+				currentSessionDir = initDebugSession();
+				ctx.ui.setStatus("venice-debug", "🔍 Venice Debug ON");
+				ctx.ui.notify(
+					`Venice debug logging ON\nLogs: ${currentSessionDir}`,
+					"info",
+				);
+			} else {
+				ctx.ui.setStatus("venice-debug", undefined);
+				ctx.ui.notify("Venice debug logging OFF", "info");
+			}
+		},
+	});
+
+	// -----------------------------------------------------------------------
+	// before_provider_request — Surface Venice's tool-count 400 pre-flight.
+	//
+	// Runs before the max_tokens clamp and debug handlers. When the outgoing
+	// payload carries more tool definitions than a model's known limit, emit a
+	// clear notify naming the model, limit, and count. The request still goes
+	// out (we can't abort from here), so pi will also show its opaque 400 —
+	// but this notify gives the real reason.
+	// -----------------------------------------------------------------------
+
+	let toolLimitNotifiedThisTurn = false;
+
+	pi.on("before_provider_request", (event, ctx) => {
+		const payload = event.payload as Record<string, unknown> | undefined;
+		if (!payload || typeof payload !== "object") return;
+
+		const modelId = payload.model as string | undefined;
+		if (!modelId) return;
+
+		const limit = MODEL_TOOL_LIMITS.get(modelId);
+		if (limit === undefined) return;
+
+		const tools = payload.tools;
+		const toolCount = Array.isArray(tools) ? tools.length : 0;
+		if (toolCount <= limit) return;
+
+		// Avoid spamming on pi's automatic retries within the same turn.
+		if (toolLimitNotifiedThisTurn) return;
+		toolLimitNotifiedThisTurn = true;
+		// Reset at turn end so the next user turn can notify again.
+		pi.on("turn_end", () => {
+			toolLimitNotifiedThisTurn = false;
+		});
+
+		const detail = `This model supports at most ${limit} tool definitions per request (received ${toolCount}). Reduce the number of entries in the \`tools\` array.`;
+
+		if (debugEnabled)
+			logEvent("tool_limit_exceeded", { modelId, limit, toolCount });
+
+		ctx.ui.notify(
+			`Venice model "${modelId}" rejects requests with more than ${limit} tools (this request sends ${toolCount}).\n` +
+				`Venice error: ${detail}\n` +
+				`Switch to a model without this limit, or disable extensions/skills to send ≤ ${limit} tools.`,
+			"error",
+		);
+	});
+
+	// -----------------------------------------------------------------------
+	// before_provider_request — Clamp max_tokens to fit within context window
+	//
+	// Venice defaults max_tokens to maxCompletionTokens (e.g. 131072) when the
+	// client doesn't send it. When input is large, input + max_tokens can exceed
+	// the model's contextWindow, causing a 400 error and triggering compaction.
+	//
+	// This handler estimates input tokens and clamps max_tokens so that
+	//   input_tokens + max_tokens <= contextWindow - safety_margin
+	//
+	// Registered before the debug handler so it runs first in the chain.
+	// -----------------------------------------------------------------------
+
+	pi.on("before_provider_request", (event) => {
+		const payload = event.payload as Record<string, unknown> | undefined;
+		if (!payload || typeof payload !== "object") return;
+
+		const modelId = payload.model as string | undefined;
+		if (!modelId) return;
+
+		const meta = MODEL_METADATA.get(modelId);
+		if (!meta) return;
+
+		const { contextWindow, maxTokens: apiMaxTokens } = meta;
+
+		// --- Compute safe max_tokens ---
+		//
+		// Two constraints:
+		//   1. Context window: input_tokens + max_tokens must not overflow.
+		//   2. Model capacity: max_tokens must not exceed the server-side
+		//      limit (often 131072 for GLM 5.1, even though its API reports
+		//      maxCompletionTokens as 24000 — a known Venice discrepancy).
+		//
+		// We use max(apiMaxTokens, contextWindow * 0.4) as the effective cap:
+		// for models where the API value is trustworthy it is used directly;
+		// for models where it's clearly too low (< 40% of context) we raise
+		// the ceiling to avoid wasting output capacity.
+
+		const safetyMargin = 8192;
+		const inputTokens = estimateInputTokensFromPayload(payload);
+		const inputReserve = Math.max(inputTokens, contextWindow * 0.25);
+		const maxFromContext = contextWindow - inputReserve - safetyMargin;
+		const minOutput = 16384;
+
+		// Effective cap: never exceed what the model can actually produce.
+		// Use the higher of the API-reported maxTokens and 40% of context,
+		// since some models (e.g. GLM 5.1) report implausibly low values.
+		const effectiveCap = Math.max(apiMaxTokens, contextWindow * 0.4);
+
+		const safeMax = Math.max(minOutput, Math.min(maxFromContext, effectiveCap));
+
+		// --- Case 1: pi didn't set max_tokens at all ---
+		//
+		// This is the common case. Pi never sends max_tokens, so Venice
+		// defaults to the model's full completion capacity (often 131072),
+		// which can overflow. Always set max_tokens explicitly.
+
+		if (!("max_tokens" in payload) && !("max_completion_tokens" in payload)) {
+			return {
+				...payload,
+				max_tokens: safeMax,
+				venice_parameters: { include_venice_system_prompt: false },
+			};
+		}
+
+		// --- Case 2: pi set max_tokens explicitly ---
+		//
+		// Only clamp downward if the set value exceeds our safe level.
+		// Never increase max_tokens beyond what pi requested.
+
+		const currentMax =
+			(payload.max_tokens as number) ??
+			(payload.max_completion_tokens as number) ??
+			meta.maxTokens;
+
+		if (currentMax <= safeMax)
+			return {
+				...payload,
+				venice_parameters: { include_venice_system_prompt: false },
+			};
+
+		const updated = {
+			...payload,
+			max_tokens: safeMax,
+		};
+		if ("max_completion_tokens" in updated) {
+			delete (updated as Record<string, unknown>).max_completion_tokens;
+		}
+		return {
+			...updated,
+			venice_parameters: { include_venice_system_prompt: false },
+		};
+	});
+
+	// -----------------------------------------------------------------------
+	// Debug event handlers (only active when debugEnabled is true)
+	// -----------------------------------------------------------------------
+
+	pi.on("before_provider_request", (event) => {
+		if (!debugEnabled) return;
+		// Log all requests when debugging — Venice model IDs (like "qwen3-6-27b")
+		// don't contain "venice", so we can't reliably filter by model name.
+		// Users can filter by model in the log files.
+
+		requestCounter++;
+		const id = String(requestCounter).padStart(3, "0");
+
+		logEvent("before_provider_request", {
+			requestId: id,
+			model: event.payload?.model,
+		});
+		logFile(`request-payload-${id}.json`, event.payload);
+	});
+
+	pi.on("after_provider_response", (event) => {
+		if (!debugEnabled) return;
+
+		logEvent("after_provider_response", {
+			status: event.status,
+			contentType: event.headers?.["content-type"],
+		});
+		logFile(`response-headers-${requestCounter}.json`, {
+			status: event.status,
+			headers: event.headers,
+		});
+	});
+
+	pi.on("message_end", async (event) => {
+		if (!debugEnabled) return;
+		const msg = event.message;
+		if (msg.role !== "assistant") return;
+
+		// Only log for Venice provider responses.
+		// Venice model IDs (e.g. "qwen3-6-27b") don't contain "venice",
+		// but msg.provider should be "venice" since that's our provider name.
+		if (msg.provider !== "venice") return;
+
+		logEvent("message_end", {
+			role: msg.role,
+			stopReason: msg.stopReason,
+			errorMessage: msg.errorMessage,
+			usage: msg.usage,
+			contentBlockCount: msg.content?.length,
+			contentTypes: msg.content?.map((b: { type: string }) => b.type),
+		});
+
+		// Write a summary file for the last completed response
+		logFile("message-summary.json", {
+			stopReason: msg.stopReason,
+			errorMessage: msg.errorMessage,
+			usage: msg.usage,
+			contentBlocks: msg.content?.map((b: { type: string }) => ({
+				type: b.type,
+				...(b.type === "text"
+					? { length: (b as { text: string }).text?.length }
+					: {}),
+				...(b.type === "toolCall"
+					? {
+							name: (b as { name: string }).name,
+							id: (b as { id: string }).id,
+						}
+					: {}),
+				...(b.type === "thinking"
+					? { length: (b as { thinking: string }).thinking?.length }
+					: {}),
+			})),
+		});
+	});
+
+	// Also log turn-level info for context
+	pi.on("turn_end", async (event) => {
+		if (!debugEnabled) return;
+
+		logEvent("turn_end", {
+			turnIndex: event.turnIndex,
+		});
 	});
 }

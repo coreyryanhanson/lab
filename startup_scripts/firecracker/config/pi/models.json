@@ -1,17 +1,21 @@
 {
   "providers": {
-    "local-llama": {
-      "baseUrl": "http://192.168.100.1:8001/v1",
+    "gondola-ai": {
+      "baseUrl": "https://api.gondola-ai.com/v1",
       "api": "openai-completions",
-      "apiKey": "not-needed",
+      "headers": { "x-gondola-max-factor": "0.30" },
+      "apiKey": "GONDOLA_API_KEY1",
       "models": [
-        {
-          "id": "llama-local",
-          "name": "Local Qwen3.6-35B-A3B",
-          "contextWindow": 98304,
-          "maxTokens": 81920
-        }
+        { "id": "z-ai-glm-5-3-flash", "reasoning": true, "maxTokens": 32768, "contextWindow": 1000000 },
+        { "id": "z-ai-glm-5-3", "reasoning": true, "maxTokens": 32768, "contextWindow": 1000000 },
+        { "id": "deepseek-v4-flash-0731", "reasoning": true, "maxTokens": 32768, "contextWindow": 1000000 },
+        { "id": "google-gemma-4-31b-it", "reasoning": true, "maxTokens": 8192, "contextWindow": 256000 }
       ]
+    },
+    "openrouter": {
+      "baseUrl": "https://openrouter.ai/api/v1",
+      "api": "openai-completions",
+      "apiKey": "$OPENROUTER_API_KEY1"
     }
   }
 }
