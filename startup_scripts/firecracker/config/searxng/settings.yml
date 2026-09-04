@@ -17,5 +17,9 @@ search:
     - html
     - json
 
+engines:
+  - name: duckduckgo web
+    disabled: false
+
 valkey:
   url: false
