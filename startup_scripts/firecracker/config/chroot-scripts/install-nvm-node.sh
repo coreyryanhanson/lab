@@ -15,9 +15,6 @@ nvm install --lts
 # Explicitly set default alias (critical for non-interactive shells)
 nvm alias default "$(nvm current)"
 
-# Install OpenCode globally
-npm install -g opencode-ai@latest
-
 # Create nvm profile script with dynamic NODE_PATH
 cat > /etc/profile.d/nvm.sh << 'NVM_PROFILE'
 export NVM_DIR="/root/.nvm"

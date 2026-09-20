@@ -133,9 +133,9 @@ sudo chroot "$ROOTFS_DIR" /bin/bash -c '
 '
 
 # ============================================================
-# Install nvm + Node.js + OpenCode
+# Install nvm + Node.js
 # ============================================================
-echo "Installing nvm, Node.js, and OpenCode..."
+echo "Installing nvm and Node.js..."
 
 # Copy and run the nvm/Node.js install script inside the chroot
 sudo cp "${SCRIPT_DIR}/config/chroot-scripts/install-nvm-node.sh" "${ROOTFS_DIR}/tmp/"
@@ -409,33 +409,6 @@ sudo cp "${KEY_DIR}/debian-trixie.id_rsa.pub" "$ROOTFS_DIR/root/.ssh/authorized_
 sudo chown -R root:root "$ROOTFS_DIR/root/.ssh"
 sudo chmod 700 "$ROOTFS_DIR/root/.ssh"
 sudo chmod 600 "$ROOTFS_DIR/root/.ssh/authorized_keys"
-
-# ============================================================
-# Install OpenCode configuration (config + tools + utils + skills)
-# ============================================================
-echo "Setting up OpenCode config..."
-
-# Copy full opencode config into chroot
-sudo cp -a "${SCRIPT_DIR}/config/opencode" "$ROOTFS_DIR/tmp/opencode-config"
-
-# Run the canonical install script (handles tools, utils, skills)
-sudo chroot "$ROOTFS_DIR" /bin/bash -c '
-    bash /tmp/opencode-config/install_skills.sh
-    cp /tmp/opencode-config/config.json /root/.config/opencode/config.json
-    cp /tmp/opencode-config/package.json /root/.config/opencode/package.json 2>/dev/null || true
-'
-
-# Install npm dependencies for tools (e.g. @opencode-ai/plugin)
-sudo chroot "$ROOTFS_DIR" /bin/bash -c '
-    export NVM_DIR="/root/.nvm"
-    [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
-    cd /root/.config/opencode && [ -f package.json ] && npm install 2>/dev/null || true
-'
-
-# Clean up temp copy
-sudo rm -rf "$ROOTFS_DIR/tmp/opencode-config"
-sudo chmod 700 "$ROOTFS_DIR/root/.config"
-echo "  OpenCode config, tools, utils, and skills installed"
 
 # ============================================================
 # Install Pi Coding Agent
