@@ -1,18 +1,14 @@
 {
-  "lastChangelogVersion": "0.80.2",
+  "lastChangelogVersion": "0.86.1",
   "defaultThinkingLevel": "high",
   "defaultProvider": "venice",
   "enabledModels": [
-    "opencode-zen/deepseek-v4-flash-free",
-    "llama-server=http://192.168.100.1:8001/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
-    "venice/zai-org-glm-5-2",
-    "openrouter/google/gemma-4-31b-it:free",
-    "openrouter/deepseek/deepseek-v4-flash",
-    "venice/qwen3-6-27b"
+    "venice/z-ai-glm-5-3-flash",
+    "venice/google-gemma-4-31b-it",
+    "venice/kimi-k3",
+    "venice/z-ai-glm-5-3",
+    "venice/deepseek-v4-1-flash"
   ],
-  "browserToggle": {
-    "defaultEnabled": false
-  },
   "searxng": {
     "url": "http://127.0.0.1:8888"
   },
@@ -29,19 +25,86 @@
         "dir": "firefox",
         "enabled": true,
         "config": {}
+      },
+      {
+        "name": "chromium-py",
+        "dir": "chromium-py",
+        "enabled": true,
+        "config": {
+          "pythonPath": "/root/pi-browser/packages/pi-lean-portal/backends/python-base/.venv/bin/python3"
+        }
+      },
+      {
+        "name": "firefox-py",
+        "dir": "firefox-py",
+        "enabled": true,
+        "config": {
+          "pythonPath": "/root/pi-browser/packages/pi-lean-portal/backends/python-base/.venv/bin/python3"
+        }
+      },
+      {
+        "name": "camoufox-py",
+        "dir": "camoufox-py",
+        "enabled": true,
+        "config": {
+          "pythonPath": "/root/.pi/agent/pi-lean-portal/user-backends/camoufox-py/.venv/bin/python3"
+        }
+      },
+      {
+        "name": "invisible-py",
+        "dir": "invisible-py",
+        "enabled": true,
+        "config": {
+          "pythonPath": "/root/.pi/agent/pi-lean-portal/user-backends/invisible-py/.venv/bin/python3"
+        }
       }
     ]
   },
+  "piToolMasking": {
+    "childPolicy": "defer"
+  },
   "llamaServerUrl": "http://192.168.100.1:8001",
   "packages": [
-    "npm:pi-subagents",
-    "npm:pi-lens",
     "npm:@juicesharp/rpiv-todo",
     "npm:@juicesharp/rpiv-ask-user-question",
-    "npm:pi-llama-cpp",
     "npm:pi-simplify",
-    "npm:pi-lean-dimension"
+    "npm:pi-intercom",
+    "npm:pi-prompt-template-model",
+    "git:github.com/DietrichGebert/ponytail",
+    "/root/.pi/agent/pi-init-plan",
+    "npm:pi-file-injector",
+    "npm:pi-agents-init",
+    "npm:pi-lens",
+    "git:github.com/coreyryanhanson/pi-grill-me",
+    "npm:pi-tbox",
+    "npm:pi-subagents",
+    "npm:pi-lean-dimension",
+    "../../knowledge-base"
   ],
-  "defaultModel": "zai-org-glm-5-2",
-  "theme": "dark"
+  "defaultModel": "z-ai-glm-5-3-flash",
+  "branchSummary": {
+    "reserveTokens": 32768
+  },
+  "theme": "dark",
+  "gnubrain": {
+    "baseUrl": "http://192.168.100.1:6806",
+    "apiToken": "$SIYUAN_API_TOKEN",
+    "kbs": [
+    ],
+    "defaultKBs": [
+    ],
+    "allowUnattendedWrites": true,
+    "writeConfirmTimeout": 60
+  },
+  "toolsetDefaults": {
+    "toolset-state:pi-lean-dimension.search": {
+      "enabled": false
+    },
+    "toolset-state:pi-lean-dimension.web": {
+      "enabled": false
+    },
+    "toolset-state:pi-lean-dimension.api": {
+      "enabled": false
+    }
+  }
 }
