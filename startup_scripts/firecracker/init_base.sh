@@ -68,9 +68,6 @@ sudo mount -t proc proc "$ROOTFS_DIR/proc"
 sudo mount -t sysfs sysfs "$ROOTFS_DIR/sys"
 sudo mount -t devtmpfs devtmpfs "$ROOTFS_DIR/dev"
 
-# Bundle tmux config into the VM
-sudo cp "${SCRIPT_DIR}/config/tmux.conf" "$ROOTFS_DIR/root/.tmux.conf"
-
 sudo chroot "$ROOTFS_DIR" /bin/bash -c '
     # Set root password
     echo "root:root" | chpasswd
@@ -94,8 +91,7 @@ sudo chroot "$ROOTFS_DIR" /bin/bash -c '
         e2fsprogs \
         gnupg \
         locales \
-        libgtk-3-0 \
-        tmux
+        libgtk-3-0
 
     # Generate locale
     sed -i "s/^# *en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/" /etc/locale.gen
@@ -104,15 +100,18 @@ sudo chroot "$ROOTFS_DIR" /bin/bash -c '
 
     systemctl enable ssh
 
-    # Set tmux as default terminal
-    cat >> /root/.bashrc << 'TMUX_PROFILE'
+    # Install herdr (terminal multiplexer)
+    curl -fsSL https://herdr.dev/install.sh | sh
 
-# Auto-start tmux as the default terminal
-case "${TERM_PROGRAM}" in
-  tmux) ;; # already in tmux, do nothing
-  *) tmux attach -t default 2>/dev/null || tmux new -s default ;;
+    # Set herdr as default terminal
+    cat >> /root/.bashrc << 'HERDR_PROFILE'
+
+# Auto-start herdr as the default terminal
+case "$HERDR_ENV" in
+  1) ;; # already inside a herdr pane, do nothing
+  *) [ -t 0 ] && exec "$HOME/.local/bin/herdr" ;;
 esac
-TMUX_PROFILE
+HERDR_PROFILE
 
     # Allow root login
     sed -i "s/^#*PermitRootLogin.*/PermitRootLogin prohibit-password/" /etc/ssh/sshd_config
