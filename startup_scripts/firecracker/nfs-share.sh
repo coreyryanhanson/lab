@@ -49,6 +49,10 @@ require_installed() {
 }
 
 cmd_setup() {
+    # /etc/exports is owned by the nfs-kernel-server package; refuse to
+    # half-configure a host that doesn't have it installed yet.
+    command -v exportfs >/dev/null 2>&1 || fail "nfs-kernel-server is not installed — run: sudo apt install nfs-kernel-server, then re-run setup"
+
     # Dedicated unprivileged user for squashing. If the uid is taken by
     # a different account, the exports would squash to the wrong user — fail loudly.
     if id -u "$SQUASH_UID" >/dev/null 2>&1 && [[ "$(id -un "$SQUASH_UID")" != "$SQUASH_USER" ]]; then
