@@ -51,13 +51,14 @@ sudo ./nfs-share.sh setup
 
 What `setup` does (all idempotent):
 
-1. **rw scratch:** creates squash user `rag-scraper` (uid 1005, no login),
-   creates `/srv/rag-scrape` owned by it, refuses if the path is on a
+1. **rw scratch:** creates the squash user `rag-scraper` with uid
+   `NFS_SQUASH_UID` from `.env` (no login), creates `/srv/rag-scrape` owned by it,
+   refuses if the path is on a
    non-POSIX filesystem (exFAT can't serve a rw export), writes the
    NFSv4-only block into `/etc/nfs.conf`, appends to `/etc/exports`:
 
    ```
-   /srv/rag-scrape  192.168.100.0/24(rw,no_subtree_check,all_squash,anonuid=1005,anongid=1005)
+   /srv/rag-scrape  192.168.100.0/24(rw,no_subtree_check,all_squash,anonuid=<NFS_SQUASH_UID>,anongid=<NFS_SQUASH_UID>)
    ```
 
 2. **ro library:** generates an ed25519 keypair at
@@ -69,19 +70,20 @@ What `setup` does (all idempotent):
    ```
    ExecStart=/usr/bin/rclone serve sftp --read-only --addr 192.168.100.1:2022 \
      --user rag-reader --authorized-keys /etc/rclone-vm-share/authorized_keys \
-     /run/media/corey/SHREE_01/DHARMA_BOB
+     <NFS_RO_PATH>
    ```
 
-   The service runs as the media-volume owner (`SERVE_USER=corey`), not
-   root, with `NoNewPrivileges`/`ProtectSystem=strict` hardening. The served
-   path appears as `/` to the client.
+   The service runs as the media-volume owner (`NFS_SERVE_USER` from
+   `.env`), not root, with `NoNewPrivileges`/`ProtectSystem=strict`
+   hardening. The served path appears as `/` to the client.
 
 3. Removes the legacy sshd drop-in from the previous design if present.
 
-Paths are variables at the top of `nfs-share.sh` — edit `RO_PATH` /
-`RW_EXPORT` to match your layout, then re-run `setup` (the unit file is
-regenerated; `/etc/exports` lines are only added, never removed — clean
-stale ones by hand).
+Host-specific paths are environment variables in `.env` (`NFS_RO_PATH`,
+`NFS_SERVE_USER`, `NFS_SQUASH_UID` — see `.env.example`); ports and the rw
+export come from `config.sh` (`RO_PORT`, `RW_EXPORT`). Set your values, then
+re-run `setup` (the unit file is regenerated; `/etc/exports` lines are only
+added, never removed — clean stale ones by hand).
 
 ## Starting/stopping sharing (on demand)
 
@@ -101,21 +103,27 @@ everything back.
 
 ## VM side
 
+The read-only library mount is sshfs, which needs FUSE in the guest kernel.
+The kernel is a prebuilt Firecracker CI download; `init_base.sh` verifies it
+includes `CONFIG_FUSE_FS=y` and NFSv4 on every run, including re-runs against
+an existing `images/vmlinux-*`. If you still see `fuse: device not found` in
+the VM, the running VM is using a stale or different kernel — check the
+`vmlinux` in the jailer chroot matches `images/vmlinux-6.1.188`, and if
+necessary delete it and re-run `sudo ./init_base.sh` to re-download.
+
+Both clients (`sshfs`, `nfs-common`) and the SFTP private key
+(`/root/.ssh/rclone_sftp_ed25519`) are preinstalled/baked into the base
+image by `init_base.sh`, so the VM side is just the two mounts:
+
 ```bash
-# one-time: get the private key (from the host) and install clients
-scp -i keys/debian-trixie.id_rsa \
-    keys/rclone_sftp_ed25519 root@172.16.0.2:/root/.ssh/rclone_sftp_ed25519
-apt install sshfs
-
-./nfs-share.sh vm   # prints the exact commands; the shape is:
-
-sshfs -p 2022 -o ro,reconnect,ServerAliveInterval=15,ServerAliveCountMax=3,\
-kernel_cache,cache=yes,entry_timeout=120,attr_timeout=120,compression=no,\
-IdentityFile=/root/.ssh/rclone_sftp_ed25519,StrictHostKeyChecking=no \
-  rag-reader@192.168.100.1:/ /mnt/library
+sshfs -p 2022 -o ro,reconnect,ServerAliveInterval=15,ServerAliveCountMax=3,kernel_cache,cache=yes,entry_timeout=120,attr_timeout=120,compression=no,IdentityFile=/root/.ssh/rclone_sftp_ed25519,StrictHostKeyChecking=no rag-reader@192.168.100.1:/ /mnt/library
 
 mount -t nfs4 192.168.100.1:/srv/rag-scrape /mnt/scrape
 ```
+
+(Kept on one line deliberately — line-continuation backslashes in copied
+commands are a paste-fragility trap: a single trailing space after `\`
+splits the command.)
 
 The caching flags matter: `kernel_cache` + long `entry_timeout`/`attr_timeout`
 are safe on a read-only mount and make directory walks (`ls` on 200-entry
@@ -149,7 +157,7 @@ dirs, `find` over the tree, globs) effectively local after the first pass.
   UID claims). The service runs unprivileged with systemd hardening, bound
   to an IP reachable only from the VM's netns.
 - **rw side:** AUTH_SYS trusts client UID claims, so `all_squash` is
-  mandatory (every request rewritten to `rag-scraper`, uid 1005). Plain
+  mandatory (every request rewritten to the `NFS_SQUASH_UID` user). Plain
   `root_squash` is *not* sufficient (it only maps UID 0). Residual risk:
   the agent filling host disk — put `/srv/rag-scrape` on its own volume or
   use an XFS project quota.

@@ -26,7 +26,7 @@ usage() {
     echo "  /root/scripts    → same as above (trailing slash optional)"
     echo ""
     echo "Available overlays:"
-    ls -1 "${OVERLAY_DIR}/" 2>/dev/null | grep '\.ext4$' | sed 's/\.ext4$//' || echo "  (none)"
+    list_overlays
     exit 1
 }
 
@@ -35,6 +35,7 @@ HOST_PATH=""
 VM_PATH=""
 FILE_UID=0
 FILE_GID=0
+AUTO_REPAIR=true  # inject never prompts; always replay a dirty journal
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -95,34 +96,11 @@ if [ -z "$VM_PATH" ]; then
 fi
 
 # Safety check
-if mountpoint -q "/srv/jailer/${FC_BINARY_NAME}/${VM_ID}/root" 2>/dev/null; then
+if mountpoint -q "$CHROOT_DIR" 2>/dev/null; then
     echo "ERROR: Overlay is mounted by a running VM."
     echo "Stop the VM before injecting files: sudo ./cleanup.sh"
     exit 1
 fi
-
-# ============================================================
-# Helper: Check and repair ext4 filesystem
-# ============================================================
-check_and_repair() {
-    local img="$1"
-
-    local fs_state
-    fs_state=$(sudo dumpe2fs -h "$img" 2>/dev/null | grep "Filesystem state" | head -1 || true)
-
-    if echo "$fs_state" | grep -q "not clean"; then
-        echo "Overlay has a dirty journal (VM did not unmount cleanly)."
-        echo "Auto-repairing with e2fsck..."
-        sudo e2fsck -p "$img" || {
-            echo "WARNING: e2fsck returned errors, trying full check..."
-            sudo e2fsck -y "$img"
-        }
-        echo "Filesystem repaired."
-    else
-        echo "Filesystem is clean."
-    fi
-    return 0
-}
 
 echo "Injecting into overlay: $OVERLAY_NAME"
 

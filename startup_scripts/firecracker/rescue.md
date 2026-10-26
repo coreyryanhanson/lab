@@ -2,8 +2,8 @@
 
 ## The Problem
 
-When `init_base.sh` crashes mid-build (e.g. due to `set -e` hitting a failing command),
-three virtual filesystems remain mounted inside `base/debian-trixie-rootfs/`:
+If `init_base.sh` crashes mid-build (e.g. due to `set -e` hitting a failing command),
+three virtual filesystems can remain mounted inside `base/debian-trixie-rootfs/`:
 
 | Mount point | Type | Purpose |
 |---|---|---|
@@ -11,9 +11,11 @@ three virtual filesystems remain mounted inside `base/debian-trixie-rootfs/`:
 | `base/debian-trixie-rootfs/sys` | `sysfs` | Kernel/sysfs for chroot |
 | `base/debian-trixie-rootfs/dev` | `devtmpfs` | Device nodes for chroot |
 
-These are the mounts created at lines 56–58 of `init_base.sh`. The unmount (line 540)
-only runs if the script survives to the very end — with `set -e` and no cleanup trap,
-any earlier failure leaves them behind.
+These are the mounts created at lines 93–96 of `init_base.sh`. The script unmounts
+them normally at line 589, and an `EXIT` cleanup trap (lines 26–33) unmounts them on
+*any* exit — success, failure, or interrupt. You should rarely see leftovers anymore;
+use the manual recovery below only when the trap itself cannot clean up (e.g. the
+script was killed with `SIGKILL`, or a mount is busy and needs `umount -l`).
 
 ### Why `sudo rm -rf` appears to "stop working"
 
@@ -33,7 +35,7 @@ blocked by the kernel.
 
 > **The script does NOT change your user identity.**  No `chown` is ever performed
 > on user-owned directories outside the build tree, and the `sudo chown -R root:root`
-> on line 547 only applies to `$ROOTFS_DIR` (the debootstrap target) — and only
+> on line 596 only applies to `$ROOTFS_DIR` (the debootstrap target) — and only
 > after the unmount step, so if the script crashes, that chown never runs either.
 
 ---
@@ -67,9 +69,9 @@ Should return nothing. If it still shows entries, use `sudo umount -l` for each.
 
 ---
 
-## The Fix (applied to `init_base.sh`)
+## The cleanup trap in `init_base.sh`
 
-A cleanup trap is now registered on `EXIT` **after** `ROOTFS_DIR` is defined:
+A cleanup trap is registered on `EXIT` **after** `ROOTFS_DIR` is defined:
 
 ```bash
 cleanup_mounts() {
@@ -89,7 +91,7 @@ Key design decisions:
 | **Placed after `ROOTFS_DIR=`** | If the script fails before `ROOTFS_DIR` is set (e.g. missing `.env`), the trap does nothing safe |
 | **`if [ -n "${ROOTFS_DIR}" ]` guard** | Prevents accidentally trying to unmount the **host's** `/proc`, `/sys`, `/dev` on an empty variable |
 | **`local rc=$?`** | Captures the script's real exit code before the trap runs; the trap exits with that same code |
-| **`2>/dev/null \|\| true`** | If the mounts are already gone (normal exit after line 540), the trap silently skips |
+| **`2>/dev/null \|\| true`** | If the mounts are already gone (normal exit after line 589), the trap silently skips |
 | **`EXIT` trap (not `ERR`)** | Runs on *any* exit — success, failure, SIGINT, etc. — so mounts are always cleaned up |
 
 ---

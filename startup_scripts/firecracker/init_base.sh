@@ -3,16 +3,31 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/config.sh"
+[ -f "${SCRIPT_DIR}/.env" ] || { echo "Missing ${SCRIPT_DIR}/.env — run: cp .env.example .env"; exit 1; }
 source "${SCRIPT_DIR}/.env"
 
-# Substitute SearXNG host/port from .env into systemd service template
-sed -i "s/SEARXNG_HOST_PLACEHOLDER/${SEARXNG_HOST}/g" "${SCRIPT_DIR}/config/searxng/searxng.service"
-sed -i "s/SEARXNG_PORT_PLACEHOLDER/${SEARXNG_PORT}/g" "${SCRIPT_DIR}/config/searxng/searxng.service"
+# Refuse to rebuild while a VM is running: the truncate/mkfs below would replace
+# the rootfs image firecracker holds open, corrupting the live guest.
+if mountpoint -q "${CHROOT_DIR}" 2>/dev/null || ip netns list 2>/dev/null | grep -q "^${NETNS}"; then
+	echo "ERROR: A VM appears to be running (netns ${NETNS} or jailer chroot mounted)."
+	echo "Stop it first: sudo ./cleanup.sh"
+	exit 1
+fi
 
-ARCH="$(uname -m)"
+# Render the SearXNG unit into the build dir (gitignored); the tracked template keeps its placeholders
+[ -n "${SEARXNG_HOST:-}" ] && [ -n "${SEARXNG_PORT:-}" ] || { echo "Set SEARXNG_HOST and SEARXNG_PORT in ${SCRIPT_DIR}/.env"; exit 1; }
+mkdir -p "${SCRIPT_DIR}/base"
+sed -e "s/SEARXNG_HOST_PLACEHOLDER/${SEARXNG_HOST}/g" -e "s/SEARXNG_PORT_PLACEHOLDER/${SEARXNG_PORT}/g" \
+    "${SCRIPT_DIR}/config/searxng/searxng.service" > "${SCRIPT_DIR}/base/searxng.service"
+
 ROOTFS_DIR="${SCRIPT_DIR}/base/debian-trixie-rootfs"
 ROOTFS_IMG="${SCRIPT_DIR}/base/rootfs.ext4"
-KERNEL_DEST="${SCRIPT_DIR}/images/vmlinux-6.1.155"
+KERNEL_VERSION="6.1.188"
+KERNEL_DEST="${SCRIPT_DIR}/images/vmlinux-${KERNEL_VERSION}"
+# Pinned Firecracker CI kernel. Since the 2025/2026 upstream config refresh
+# these prebuilt kernels include FUSE and the NFS v4 client, so no local
+# kernel build is needed. The config is verified against the binary below.
+KERNEL_URL="https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/20261007-f23a2136011e-0/x86_64/vmlinux-${KERNEL_VERSION}"
 
 # Cleanup trap: unmount virtual filesystems on script exit or error
 # Placed here so ROOTFS_DIR is already defined (avoid unmounting host /proc)
@@ -30,21 +45,41 @@ echo "Building Firecracker Base Image"
 echo "========================================"
 
 # ============================================================
-# Download kernel
+# Download prebuilt guest kernel (FUSE for sshfs and the NFS
+# v4 client for the rw scratch share are both required; older
+# prebuilt CI kernels lacked them)
 # ============================================================
 if [ ! -f "$KERNEL_DEST" ]; then
-	echo "Downloading kernel..."
-	release_url="https://github.com/firecracker-microvm/firecracker/releases"
-	latest_version=$(basename $(curl -fsSLI -o /dev/null -w %{url_effective} ${release_url}/latest))
-	CI_VERSION=${latest_version%.*}
-	latest_kernel_key=$(curl "http://spec.ccfc.min.s3.amazonaws.com/?prefix=firecracker-ci/$CI_VERSION/$ARCH/vmlinux-&list-type=2" |
-		grep -oP "(?<=<Key>)(firecracker-ci/$CI_VERSION/$ARCH/vmlinux-[0-9]+\.[0-9]+\.[0-9]{1,3})(?=</Key>)" |
-		sort -V | tail -1)
-
-	wget -O "$KERNEL_DEST" "https://s3.amazonaws.com/spec.ccfc.min/${latest_kernel_key}"
+	echo "Downloading prebuilt Firecracker CI kernel ${KERNEL_VERSION}..."
+	mkdir -p "$(dirname "$KERNEL_DEST")"
+	# Download to a temp file and move into place, so a failed/partial
+	# download never leaves a corrupt kernel that later runs would trust.
+	curl -fsSL "$KERNEL_URL" -o "${KERNEL_DEST}.tmp"
+	mv "${KERNEL_DEST}.tmp" "$KERNEL_DEST"
 else
-	echo "Kernel already exists at $KERNEL_DEST"
+	echo "Prebuilt kernel already exists at $KERNEL_DEST"
 fi
+
+# Verify the config embedded in the binary (CONFIG_IKCONFIG=y) on every
+# run: fail the build loudly if a future repoint loses FUSE or NFSv4,
+# and never trust a kernel left behind by an earlier failed verification.
+python3 - "$KERNEL_DEST" <<'PYEOF'
+import gzip, sys
+
+data = open(sys.argv[1], "rb").read()
+i = data.find(b"IKCFG_ST")
+if i == -1:
+    sys.exit("kernel has no embedded config (IKCFG_ST missing)")
+end = data.find(b"IKCFG_ED", i)
+if end == -1:
+    sys.exit("kernel embedded config is truncated (IKCFG_ED missing)")
+config = gzip.decompress(data[i + len(b"IKCFG_ST"):end]).decode("utf-8", "replace")
+required = ("CONFIG_FUSE_FS=y", "CONFIG_NFS_V4=y")
+missing = [k for k in required if k not in config]
+if missing:
+    sys.exit("prebuilt kernel lacks required options: " + ", ".join(missing))
+print("Kernel config OK:", ", ".join(required))
+PYEOF
 
 # ============================================================
 # Create rootfs with debootstrap
@@ -62,6 +97,21 @@ fi
 # ============================================================
 echo "Configuring base system..."
 
+# A crashed run can leave these mounted (SIGKILL skips the EXIT trap);
+# stacking a second mount would let the chown -R below recurse into the host
+critical_mounts_left_behind() {
+	for p in proc sys dev; do
+		mountpoint -q "$ROOTFS_DIR/$p" && return 0
+	done
+	return 1
+}
+
+if critical_mounts_left_behind; then
+	echo "ERROR: $ROOTFS_DIR/{proc,sys,dev} still mounted from a previous run."
+	echo "Clean them up first (see rescue.md)."
+	exit 1
+fi
+
 # Mount virtual filesystems for chroot operations
 sudo mkdir -p "$ROOTFS_DIR/proc" "$ROOTFS_DIR/sys" "$ROOTFS_DIR/dev"
 sudo mount -t proc proc "$ROOTFS_DIR/proc"
@@ -69,12 +119,14 @@ sudo mount -t sysfs sysfs "$ROOTFS_DIR/sys"
 sudo mount -t devtmpfs devtmpfs "$ROOTFS_DIR/dev"
 
 sudo chroot "$ROOTFS_DIR" /bin/bash -c '
+    set -eo pipefail
+
     # Set root password
     echo "root:root" | chpasswd
 
     # Set hostname
     echo "firecracker" > /etc/hostname
-    echo "127.0.1.1 firecracker" >> /etc/hosts
+    grep -q "127.0.1.1 firecracker" /etc/hosts || echo "127.0.1.1 firecracker" >> /etc/hosts
 
     # Configure serial console
     systemctl enable serial-getty@ttyS0.service 2>/dev/null || true
@@ -92,7 +144,8 @@ sudo chroot "$ROOTFS_DIR" /bin/bash -c '
         gnupg \
         locales \
         libgtk-3-0 \
-        nfs-common
+        nfs-common \
+        sshfs
 
     # Generate locale
     sed -i "s/^# *en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/" /etc/locale.gen
@@ -101,18 +154,21 @@ sudo chroot "$ROOTFS_DIR" /bin/bash -c '
 
     systemctl enable ssh
 
-    # Install herdr (terminal multiplexer)
+    # Install herdr (terminal multiplexer); pipefail makes a failed
+    # download fatal instead of piping an empty script into sh
     curl -fsSL https://herdr.dev/install.sh | sh
 
-    # Set herdr as default terminal
-    cat >> /root/.bashrc << 'HERDR_PROFILE'
+    # Set herdr as default terminal (guarded so re-runs do not append twice)
+    if ! grep -q "Auto-start herdr as the default terminal" /root/.bashrc; then
+        cat >> /root/.bashrc << HERDR_PROFILE
 
 # Auto-start herdr as the default terminal
-case "$HERDR_ENV" in
+case "\$HERDR_ENV" in
   1) ;; # already inside a herdr pane, do nothing
-  *) [ -t 0 ] && exec "$HOME/.local/bin/herdr" ;;
+  *) [ -t 0 ] && exec "\$HOME/.local/bin/herdr" ;;
 esac
 HERDR_PROFILE
+    fi
 
     # Allow root login
     sed -i "s/^#*PermitRootLogin.*/PermitRootLogin prohibit-password/" /etc/ssh/sshd_config
@@ -124,6 +180,8 @@ HERDR_PROFILE
 echo "Installing Python and uv..."
 
 sudo chroot "$ROOTFS_DIR" /bin/bash -c '
+    set -eo pipefail
+
     apt-get install -y python3 python3-pip python3-venv
 
     # Install uv
@@ -147,153 +205,7 @@ sudo rm -f "${ROOTFS_DIR}/tmp/install-nvm-node.sh"
 # ============================================================
 echo "Adding overlay-init script..."
 
-sudo tee "$ROOTFS_DIR/sbin/overlay-init" >/dev/null <<'OVERLAY_INIT'
-#!/bin/sh
-# OverlayFS init script for Firecracker
-# Requires: /overlay, /rom, /mnt directories in base rootfs
-# Requires: overlay_root=vdb (or "ram") in kernel boot args
-
-OVERLAY_DEVICE="${overlay_root}"
-
-# Mount essential filesystems early
-mount -t proc proc /proc
-mount -t sysfs sysfs /sys
-mount -t devtmpfs devtmpfs /dev
-
-# Wait for devices to settle
-sleep 0.5
-
-# Mount the overlay device or use tmpfs
-if [ "$OVERLAY_DEVICE" = "ram" ]; then
-    echo "Using tmpfs overlay (ephemeral)"
-    mount -t tmpfs tmpfs /overlay
-else
-    echo "Mounting overlay device: /dev/$OVERLAY_DEVICE"
-
-    # Wait for overlay device to appear
-    MAX_WAIT=30
-    WAITED=0
-    while [ $WAITED -lt $MAX_WAIT ]; do
-        if [ -b "/dev/$OVERLAY_DEVICE" ]; then
-            break
-        fi
-        sleep 0.5
-        WAITED=$((WAITED + 1))
-    done
-
-    if [ ! -b "/dev/$OVERLAY_DEVICE" ]; then
-        echo "ERROR: Overlay device /dev/$OVERLAY_DEVICE not found after ${MAX_WAIT}s"
-        echo "Available block devices:"
-        ls -la /dev/vd* /dev/sd* 2>/dev/null || true
-        echo "Falling back to read-only base rootfs"
-        umount /proc /sys /dev 2>/dev/null || true
-        exec /sbin/init
-    fi
-
-    # Check if filesystem needs checking (was it cleanly unmounted?)
-    # dumpe2fs returns: "Filesystem state: clean" or "not clean"
-    FS_STATE=$(dumpe2fs -h "/dev/$OVERLAY_DEVICE" 2>/dev/null | grep "Filesystem state" | head -1)
-    NEEDS_FSCK=0
-
-    if [ -z "$FS_STATE" ]; then
-        echo "WARNING: Could not read filesystem state, running e2fsck..."
-        NEEDS_FSCK=1
-    elif echo "$FS_STATE" | grep -q "not clean"; then
-        echo "Filesystem was not cleanly unmounted, running e2fsck..."
-        NEEDS_FSCK=1
-    elif echo "$FS_STATE" | grep -q "with errors"; then
-        echo "Filesystem has errors, running e2fsck..."
-        NEEDS_FSCK=1
-    fi
-
-    # Only run e2fsck if needed
-    if [ $NEEDS_FSCK -eq 1 ]; then
-        # -p = automatic repair
-        # Exit codes: 0=clean, 1=errors corrected, 2=corrected+reboot, 4+=uncorrected
-        e2fsck -p "/dev/$OVERLAY_DEVICE"
-        E2FSCK_RC=$?
-
-        if [ $E2FSCK_RC -ge 4 ]; then
-            echo "WARNING: e2fsck could not fully repair overlay (rc=$E2FSCK_RC)"
-            echo "Mounting read-only as precaution"
-            MOUNT_OPTIONS="ro"
-        elif [ $E2FSCK_RC -eq 2 ]; then
-            echo "Filesystem errors corrected, reboot recommended (continuing)"
-            MOUNT_OPTIONS="rw"
-        elif [ $E2FSCK_RC -eq 1 ]; then
-            echo "Filesystem errors corrected"
-            MOUNT_OPTIONS="rw"
-        else
-            echo "Filesystem check passed"
-            MOUNT_OPTIONS="rw"
-        fi
-    else
-        echo "Filesystem is clean, skipping e2fsck"
-        MOUNT_OPTIONS="rw"
-    fi
-
-    # Mount with appropriate options
-    # errors=remount-ro protects against runtime corruption
-    mount -o ${MOUNT_OPTIONS},errors=remount-ro "/dev/$OVERLAY_DEVICE" /overlay
-
-    if [ $? -ne 0 ]; then
-        echo "ERROR: Failed to mount /dev/$OVERLAY_DEVICE"
-        echo "Falling back to read-only base rootfs"
-        umount /proc /sys /dev 2>/dev/null || true
-        exec /sbin/init
-    fi
-
-    # Double-check overlay is writable before we set up OverlayFS
-    if [ "$MOUNT_OPTIONS" = "ro" ] || ! touch /overlay/.writable_test 2>/dev/null; then
-        echo "WARNING: Overlay mounted read-only, cannot create writable overlay"
-        rm -f /overlay/.writable_test 2>/dev/null
-        echo "Booting from base rootfs only (changes will not persist)"
-        # Skip overlay and boot directly from base
-        umount /overlay 2>/dev/null || true
-        umount /proc /sys /dev 2>/dev/null || true
-        exec /sbin/init
-    fi
-    rm -f /overlay/.writable_test
-fi
-
-# Ensure overlay directories exist
-mkdir -p /overlay/root /overlay/work
-
-# Set up OverlayFS (lowerdir=/ is the read-only base)
-echo "Setting up OverlayFS..."
-if ! mount -o noatime,lowerdir=/,upperdir=/overlay/root,workdir=/overlay/work \
-    -t overlay overlay /mnt; then
-    echo "ERROR: OverlayFS mount failed, falling back to base rootfs"
-    umount /overlay 2>/dev/null || true
-    umount /proc /sys /dev 2>/dev/null || true
-    exec /sbin/init
-fi
-
-# Move mounts into new root before pivot
-mkdir -p /mnt/overlay /mnt/rom /mnt/proc /mnt/sys /mnt/dev
-
-mount --move /overlay /mnt/overlay
-mount --move /proc /mnt/proc
-mount --move /sys /mnt/sys
-mount --move /dev /mnt/dev
-
-# Pivot to the overlay root
-echo "Pivoting to overlay root..."
-cd /mnt
-pivot_root . rom
-
-# now / is the overlay, /rom is the base rootfs
-cd /
-
-# Ensure /etc/mtab is a symlink to /proc/mounts for systemd
-ln -sf /proc/mounts /etc/mtab 2>/dev/null || true
-
-# Execute real init system
-echo "Starting init from overlay..."
-exec /sbin/init
-OVERLAY_INIT
-
-sudo chmod +x "$ROOTFS_DIR/sbin/overlay-init"
+sudo install -m 755 "${SCRIPT_DIR}/config/guest/overlay-init" "$ROOTFS_DIR/sbin/overlay-init"
 
 # ============================================================
 # Create mount points for overlay-init (CRITICAL)
@@ -303,93 +215,18 @@ echo "Creating overlay mount points..."
 sudo mkdir -p "$ROOTFS_DIR/overlay/root"
 sudo mkdir -p "$ROOTFS_DIR/overlay/work"
 sudo mkdir -p "$ROOTFS_DIR/rom"
-sudo mkdir -p "$ROOTFS_DIR/mnt"
+sudo mkdir -p "$ROOTFS_DIR/mnt/library" "$ROOTFS_DIR/mnt/scrape"
 
 # ============================================================
 # Configure networking
 # ============================================================
 echo "Configuring network auto-setup..."
 
-sudo tee "$ROOTFS_DIR/usr/local/bin/fcnet-setup.sh" >/dev/null <<'NETSCRIPT'
-#!/bin/bash
-# Firecracker network auto-configuration
-# Reads all settings from kernel boot args:
-#   vm_ip=172.16.0.2  vm_gw=172.16.0.1  vm_mask=30  dns=8.8.8.8,8.8.4.4
+sudo install -m 755 "${SCRIPT_DIR}/config/guest/fcnet-setup.sh" "$ROOTFS_DIR/usr/local/bin/fcnet-setup.sh"
 
-INTERFACE=""
-MAX_WAIT=30
-WAITED=0
+echo "Configuring fcnet-setup service..."
 
-while [ $WAITED -lt $MAX_WAIT ]; do
-    if ip link show eth0 > /dev/null 2>&1; then
-        INTERFACE="eth0"
-        break
-    fi
-    INTERFACE=$(ip link show | grep -E 'ens|enp' | grep -v lo | awk -F: '{print $2}' | head -1 | tr -d ' ')
-    if [ -n "$INTERFACE" ]; then
-        break
-    fi
-    sleep 1
-    WAITED=$((WAITED + 1))
-done
-
-if [ -z "$INTERFACE" ]; then
-    echo "ERROR: No network interface found after ${MAX_WAIT}s"
-    exit 1
-fi
-
-# Parse kernel command line
-CMDLINE=$(cat /proc/cmdline)
-
-VM_IP=$(echo "$CMDLINE" | tr ' ' '\n' | grep '^vm_ip=' | cut -d= -f2)
-VM_GW=$(echo "$CMDLINE" | tr ' ' '\n' | grep '^vm_gw=' | cut -d= -f2)
-VM_MASK=$(echo "$CMDLINE" | tr ' ' '\n' | grep '^vm_mask=' | cut -d= -f2)
-DNS_ARGS=$(echo "$CMDLINE" | tr ' ' '\n' | grep '^dns=' | cut -d= -f2)
-
-# Fallback defaults (should never be needed if kernel args are set)
-VM_IP="${VM_IP:-172.16.0.2}"
-VM_GW="${VM_GW:-172.16.0.1}"
-VM_MASK="${VM_MASK:-30}"
-
-echo "Configuring interface $INTERFACE..."
-ip link set $INTERFACE up
-ip addr add ${VM_IP}/${VM_MASK} dev $INTERFACE
-ip route add default via ${VM_GW} dev $INTERFACE
-
-# DNS configuration from kernel args (format: dns=8.8.8.8,8.8.4.4)
-if [ -n "$DNS_ARGS" ]; then
-    echo "$DNS_ARGS" | tr ',' '\n' | while read server; do
-        echo "nameserver $server"
-    done > /etc/resolv.conf
-    echo "DNS configured from kernel args: $DNS_ARGS"
-else
-    cat > /etc/resolv.conf << EOF
-nameserver 8.8.8.8
-nameserver 8.8.4.4
-EOF
-    echo "DNS configured from defaults"
-fi
-
-echo "Network configured: IP=${VM_IP}/${VM_MASK} GW=${VM_GW} on $INTERFACE"
-NETSCRIPT
-
-sudo chmod +x "$ROOTFS_DIR/usr/local/bin/fcnet-setup.sh"
-
-sudo tee "$ROOTFS_DIR/etc/systemd/system/fcnet-setup.service" >/dev/null <<'SERVICE'
-[Unit]
-Description=Firecracker Network Setup
-After=network.target local-fs.target
-Wants=network.target
-
-[Service]
-Type=oneshot
-ExecStartPre=/bin/sleep 1
-ExecStart=/usr/local/bin/fcnet-setup.sh
-RemainAfterExit=yes
-
-[Install]
-WantedBy=multi-user.target
-SERVICE
+sudo install -m 644 "${SCRIPT_DIR}/config/guest/fcnet-setup.service" "$ROOTFS_DIR/etc/systemd/system/fcnet-setup.service"
 
 sudo ln -sf /etc/systemd/system/fcnet-setup.service \
 	"$ROOTFS_DIR/etc/systemd/system/multi-user.target.wants/fcnet-setup.service"
@@ -410,12 +247,24 @@ sudo chown -R root:root "$ROOTFS_DIR/root/.ssh"
 sudo chmod 700 "$ROOTFS_DIR/root/.ssh"
 sudo chmod 600 "$ROOTFS_DIR/root/.ssh/authorized_keys"
 
+# Bake the rclone SFTP private key into the base image so the VM can mount
+# the read-only library without any key-copy step (the pubkey side is
+# installed to the host by nfs-share.sh setup)
+if [ ! -f "${KEY_DIR}/rclone_sftp_ed25519" ]; then
+	echo "Generating rclone SFTP key..."
+	ssh-keygen -t ed25519 -N "" -f "${KEY_DIR}/rclone_sftp_ed25519" -C "rag-reader-vm" -q
+fi
+sudo cp "${KEY_DIR}/rclone_sftp_ed25519" "$ROOTFS_DIR/root/.ssh/rclone_sftp_ed25519"
+sudo chmod 600 "$ROOTFS_DIR/root/.ssh/rclone_sftp_ed25519"
+
 # ============================================================
 # Install Pi Coding Agent
 # ============================================================
 echo "Installing Pi Coding Agent..."
 
 sudo chroot "$ROOTFS_DIR" /bin/bash -c '
+    set -e
+
     export NVM_DIR="/root/.nvm"
     [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
     npm install -g --ignore-scripts @earendil-works/pi-coding-agent
@@ -425,9 +274,16 @@ sudo chroot "$ROOTFS_DIR" /bin/bash -c '
     pi install npm:pi-subagents
     pi install npm:@juicesharp/rpiv-ask-user-question
     pi install npm:@juicesharp/rpiv-todo
-    pi install npm:pi-llama-cpp
     pi install npm:pi-lean-dimension
-    echo "  Pi packages installed: pi-subagents, rpiv-ask-user-question, rpiv-todo, pi-llama-cpp, pi-lean-dimension"
+    pi install npm:pi-agents-init
+    pi install npm:pi-file-injector
+    pi install npm:pi-prompt-template-model
+    pi install npm:pi-lens
+    pi install npm:pi-intercom
+    pi install npm:pi-tbox
+    pi install npm:gnubrain
+    pi install git:github.com/DietrichGebert/ponytail
+    echo "  Pi packages installed: pi-subagents, rpiv-ask-user-question, rpiv-todo, pi-lean-dimension, pi-agents-init, pi-file-injector, pi-prompt-template-model, pi-lens, pi-intercom, pi-tbox, gnubrain, ponytail"
 '
 
 # ============================================================
@@ -435,9 +291,12 @@ sudo chroot "$ROOTFS_DIR" /bin/bash -c '
 # ============================================================
 echo "Setting up Pi config..."
 
+sudo rm -rf "$ROOTFS_DIR/tmp/pi-config"
 sudo cp -a "${SCRIPT_DIR}/config/pi" "$ROOTFS_DIR/tmp/pi-config"
 
 sudo chroot "$ROOTFS_DIR" /bin/bash -c '
+    set -e
+
     PI_DIR="$HOME/.pi/agent"
     mkdir -p "$PI_DIR/extensions"
     mkdir -p "$PI_DIR/prompts"
@@ -459,14 +318,16 @@ echo "Installing SearXNG..."
 
 sudo mkdir -p "$ROOTFS_DIR/etc/searxng"
 sudo cp "${SCRIPT_DIR}/config/searxng/settings.yml" "$ROOTFS_DIR/etc/searxng/"
-sudo cp "${SCRIPT_DIR}/config/searxng/searxng.service" "$ROOTFS_DIR/etc/systemd/system/"
+sudo cp "${SCRIPT_DIR}/base/searxng.service" "$ROOTFS_DIR/etc/systemd/system/"
 
 sudo chroot "$ROOTFS_DIR" /bin/bash -c '
-    # Create searxng system user
-    useradd --system --shell /bin/bash --home-dir /usr/local/searxng searxng
+    set -e
 
-    # Clone SearXNG source
-    git clone --depth 1 https://github.com/searxng/searxng.git /usr/local/searxng/searxng-src
+    # Create searxng system user (guard for re-runs after a partial build)
+    id searxng >/dev/null 2>&1 || useradd --system --shell /bin/bash --home-dir /usr/local/searxng searxng
+
+    # Clone SearXNG source (guard for re-runs after a partial build)
+    [ -d /usr/local/searxng/searxng-src/.git ] || git clone --depth 1 https://github.com/searxng/searxng.git /usr/local/searxng/searxng-src
 
     # Create Python venv with uv and install SearXNG + Granian
     /usr/local/bin/uv venv /usr/local/searxng/searx-pyenv
@@ -497,6 +358,8 @@ echo "Installing Playwright browser binaries..."
 # the `playwright` npm package. Playwright does NOT download browser binaries
 # during npm install, so install them explicitly here.
 sudo chroot "$ROOTFS_DIR" /bin/bash -c '
+    set -e
+
     export NVM_DIR="/root/.nvm"
     [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
     npx --yes playwright install --with-deps chromium firefox
@@ -515,8 +378,19 @@ sed -n '/^[A-Z_]/s/^/export /p' "${SCRIPT_DIR}/.env" |
 sudo chmod 644 "$ROOTFS_DIR/etc/profile.d/99-vm-env.sh"
 echo "  Environment variables written to /etc/profile.d/99-vm-env.sh"
 
+# /etc/profile.d only loads for login shells, so interactive non-login shells
+# (herdr panes, nested bash) would miss the env. Root's .bashrc covers those.
+grep -q '99-vm-env.sh' "$ROOTFS_DIR/root/.bashrc" 2>/dev/null ||
+	sudo tee -a "$ROOTFS_DIR/root/.bashrc" >/dev/null << 'BASHRCEOF'
+
+# VM environment variables (API keys, model config)
+source /etc/profile.d/99-vm-env.sh
+BASHRCEOF
+
 # Configure git inside the VM
 sudo chroot "$ROOTFS_DIR" /bin/bash -c '
+    set -e
+
     git config --global user.name "'"${GIT_NAME}"'"
     git config --global user.email "'"${GIT_EMAIL}"'"
     echo "  Git configured: '"${GIT_NAME}"' <'"${GIT_EMAIL}"'>"
@@ -530,6 +404,10 @@ sudo umount "$ROOTFS_DIR/proc" "$ROOTFS_DIR/sys" "$ROOTFS_DIR/dev" 2>/dev/null |
 # ============================================================
 echo "Creating rootfs image..."
 
+if critical_mounts_left_behind; then
+	echo "ERROR: $ROOTFS_DIR/{proc,sys,dev} still mounted; refusing to chown through a live mount."
+	exit 1
+fi
 sudo chown -R root:root "$ROOTFS_DIR"
 truncate -s 8G "$ROOTFS_IMG"
 sudo mkfs.ext4 -d "$ROOTFS_DIR" -F "$ROOTFS_IMG"

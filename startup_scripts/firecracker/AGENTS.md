@@ -13,7 +13,7 @@ sources `config.sh`, the single source of truth for paths, IPs, VM resources and
 ```bash
 cp .env.example .env          # required first; init_base.sh `source`s it under `set -e`
 sudo ./init_base.sh           # ~minutes, network-heavy; writes base/rootfs.ext4,
-                              # images/vmlinux-6.1.155, keys/debian-trixie.id_rsa
+                              # images/vmlinux-6.1.188, keys/debian-trixie.id_rsa
 ./create_overlay.sh <name>    # 8G sparse ext4 + overlays/<name>.base_checksum
 sudo ./start.sh <name>        # aborts if netns fc-vm1 exists; else runs cleanup.sh first
 ssh -i keys/debian-trixie.id_rsa root@172.16.0.2
@@ -29,9 +29,10 @@ in `config.sh`; additional overlays are just extra disk images, not concurrent V
 
 - `/dev/kvm` readable/writable; host needs `debootstrap`, `jq`, `iptables`,
   `firewall-cmd` (firewalld), `e2fsprogs`.
-- `release-v1.15.1-x86_64/{firecracker,jailer}-v1.15.1-x86_64` must be placed by
-  hand. No script downloads them and the directory is gitignored; `start.sh`
-  fails its binary check if missing. Only the kernel is downloaded (`init_base.sh`).
+- Firecracker/jailer binaries (version pinned in `config.sh` as `FC_VERSION`,
+  currently `v1.17.0`) are placed by hand into
+  `release-${FC_VERSION}-x86_64/` (from the GitHub release tgz);
+  `start.sh` fails its binary check if missing.
 
 ## Artifacts and where they land
 
@@ -39,11 +40,11 @@ in `config.sh`; additional overlays are just extra disk images, not concurrent V
 | --- | --- |
 | `base/rootfs.ext4` | 8G base image, built by `init_base.sh`; bind-mounted read-only at boot |
 | `base/debian-trixie-rootfs/` | debootstrap working tree (intermediate; reused to skip debootstrap on rebuild) |
-| `images/vmlinux-6.1.155` | kernel; the name is fixed in `config.sh` even though the downloader fetches the latest 6.1.x |
+| `images/vmlinux-6.1.188` | guest kernel, prebuilt Firecracker CI download (pinned in `init_base.sh`, verified `CONFIG_FUSE_FS=y` + NFSv4 for sshfs) |
 | `keys/debian-trixie.id_rsa` | guest root SSH key, generated once, gitignored |
 | `overlays/<name>.ext4` + `.base_checksum` | writable layers; md5 of the base they were built against |
 | `extracted-<name>/` | default output dir of `extract.sh` |
-| `/srv/jailer/firecracker-v1.15.1-x86_64/vm1/root/` | jailer chroot: `vmlinux`, bind-mounted `rootfs.ext4`, `overlay.ext4`, `config.json` |
+| `/srv/jailer/firecracker-v1.17.0-x86_64/vm1/root/` | jailer chroot: `vmlinux`, bind-mounted `rootfs.ext4`, `overlay.ext4`, `config.json` |
 | `firecracker-vm1.log` | Firecracker output; deleted by `cleanup.sh` |
 
 `base/`, `images/`, `overlays/`, `keys/`, `release*/`, `extracted-*/` and `.env` are
@@ -63,13 +64,15 @@ files into an overlay, but `/etc/profile.d/99-vm-env.sh` still comes from the ba
 - Python 3 + pip/venv, `uv` in `/usr/local/bin`, nvm + Node LTS
   (`config/chroot-scripts/install-nvm-node.sh`). **OpenCode is not installed** —
   Pi Coding Agent is the only agent in the image.
-- Pi Coding Agent + five packages via `pi install npm:` (pi-subagents,
-  `@juicesharp/rpiv-ask-user-question`, `@juicesharp/rpiv-todo`, pi-llama-cpp,
-  pi-lean-dimension), then Playwright Chromium + Firefox
-  (`npx playwright install --with-deps`).
+- Pi Coding Agent + twelve packages via `pi install` (eleven `npm:` —
+  pi-subagents, `@juicesharp/rpiv-ask-user-question`, `@juicesharp/rpiv-todo`,
+  pi-lean-dimension, pi-agents-init, pi-file-injector, pi-prompt-template-model,
+  pi-lens, pi-intercom, pi-tbox, gnubrain — plus ponytail via `git:`),
+  then Playwright Chromium + Firefox (`npx playwright install --with-deps`).
 - SearXNG as a systemd service on `127.0.0.1:8888` (granian; settings from
   `config/searxng/`).
-- Every `KEY=value` line of `.env` exported via `/etc/profile.d/99-vm-env.sh`, plus
+- Every `KEY=value` line of `.env` exported via `/etc/profile.d/99-vm-env.sh`
+  (login shells) and sourced from `/root/.bashrc` (interactive shells), plus
   git identity from `GIT_NAME`/`GIT_EMAIL`.
 
 ## Guest configuration (`config/`)
@@ -82,13 +85,20 @@ files into an overlay, but `/etc/profile.d/99-vm-env.sh` still comes from the ba
 - `config/searxng/` — unit file + `settings.yml` (JSON format enabled). The unit
   is shipped with `SEARXNG_HOST_PLACEHOLDER` / `SEARXNG_PORT_PLACEHOLDER`.
 - `config/chroot-scripts/install-nvm-node.sh` — run only by `init_base.sh`.
+- `config/guest/` — guest scripts installed by `init_base.sh` (`overlay-init`
+  → `/sbin/`, `fcnet-setup.sh` → `/usr/local/bin/`, `fcnet-setup.service` →
+  `/etc/systemd/system/`). Editing any of them requires a base rebuild to
+  reach fresh overlays; `inject.sh` can push them into an existing overlay
+  for testing.
 - `config/opencode/` — leftover OpenCode vision tools, skills and `search.ts`;
   nothing installs or copies them, and no doc references them anymore.
 
-`.env.example` defines only `VENICE_API_KEY`, `OPENROUTER_API_KEY`, `GIT_NAME`,
-`GIT_EMAIL`, `SEARXNG_HOST`, `SEARXNG_PORT`, but `config/pi` also references
-`$GONDOLA_API_KEY`, `$OPENROUTER_API_KEY1` (sic), `$SIYUAN_API_TOKEN`, and
-host-only paths (`/root/pi-browser/...`, `../../knowledge-base`). So the
+`.env.example` defines `VENICE_API_KEY`, `OPENROUTER_API_KEY`, `GIT_NAME`,
+`GIT_EMAIL`, `SEARXNG_HOST`, `SEARXNG_PORT`, plus the host-side sharing values
+`NFS_RO_PATH`, `NFS_SERVE_USER`, `NFS_SQUASH_UID` (consumed by `nfs-share.sh`; note the build's
+`.env` injection does not filter them, so they also reach the guest) — but
+`config/pi` also references
+`$GONDOLA_API_KEY`, `$OPENROUTER_API_KEY1` (sic), `$SIYUAN_API_TOKEN`. So the
 `gondola-ai`/`openrouter` providers, `gnubrain`, and the `*-py` browser backends are
 non-functional in a fresh guest until you add the vars/files.
 
@@ -98,13 +108,13 @@ non-functional in a fresh guest until you add the vars/files.
   of the base it was created against and `start.sh` refuses to boot a mismatch.
   The only exits are recreating the overlay (data loss) or rewriting the checksum
   file (corruption risk). Treat `init_base.sh` as destructive.
-- `init_base.sh` rewrites `config/searxng/searxng.service` in place, replacing the
-  host/port placeholders. After one run the placeholders are gone, so later `.env`
-  changes never reach the unit; restore the placeholders with git before committing.
+- `init_base.sh` renders `config/searxng/searxng.service` to `base/searxng.service`
+  (gitignored), replacing the host/port placeholders; the tracked template keeps
+  its placeholders and is never modified.
 - A crashed `init_base.sh` leaves `proc`/`sys`/`dev` mounted under
   `base/debian-trixie-rootfs/`, so `rm -rf` fails with EBUSY. See `rescue.md`
-  (`umount -l` then delete). Note `rescue.md` is stale on one point: the EXIT
-  cleanup trap it says is missing now exists in `init_base.sh`.
+  (`umount -l` then delete); the `EXIT` cleanup trap usually prevents this,
+  but not after `SIGKILL` or with busy mounts.
 
 ## Overlay files: reading and writing without a VM
 
@@ -112,8 +122,8 @@ non-functional in a fresh guest until you add the vars/files.
 subdirectory (the OverlayFS upper dir, not the VM root). Consequences:
 
 - VM must be stopped; both refuse if the jailer chroot is still mounted.
-- `inject.sh` fails if the overlay was never booted, because overlay-init has not
-  created `root/` and `work/` yet.
+- Both work on a never-booted overlay: `create_overlay.sh` pre-creates
+  `root/` and `work/` for overlay-init.
 - `extract.sh` only sees files that exist in the overlay layer. Unmodified base
   files are absent and extraction reports "not found". `--list` shows changes and
   whiteouts.
@@ -134,21 +144,21 @@ Guest disk is small by design — bulk data belongs on the host NFS shares.
   by the `fcnet-setup` service in the base image — there is no DHCP.
 - Sharing (`nfs-share.sh setup|start|stop|status|vm`, details in `nfs.md`): the
   read-only media library is served by `rclone serve sftp --read-only`
-  (port 2022, bound to the veth IP, key auth via `keys/` — gitignored) and
-  works on any filesystem — including the exFAT hotplug volume. The rw
-  scratch is NFSv4 (port 2049 only, forced via `vers3=n`); exports must
+  (`RO_PORT` from `config.sh`, bound to the veth IP, key auth via `keys/` —
+  gitignored) and works on any filesystem — including the exFAT hotplug volume.
+  The rw scratch is NFSv4 (port 2049 only, forced via `vers3=n`); exports must
   allow `192.168.100.0/24` because VM traffic is MASQUERADEd to the veth
   subnet — `172.16.0.2` silently gets "access denied" — and `all_squash` to
-  uid 1005 is mandatory (AUTH_SYS trusts client UID claims). Paths live at
-  the top of `nfs-share.sh` (`RO_PATH` for the library, rw scratch
-  `/srv/rag-scrape`). Port 22 (host sshd) is deliberately NOT opened to the
-  VM.
+  the `NFS_SQUASH_UID` from `.env` is mandatory (AUTH_SYS trusts client UID
+  claims). Host-specific values (`NFS_RO_PATH`, `NFS_SERVE_USER`,
+  `NFS_SQUASH_UID`) live in `.env` (gitignored), not in the script. Port 22
+  (host sshd) is deliberately NOT opened to the VM.
 
 ## Resource / config knobs
 
 `config.sh` changes (`VM_VCPUS`, `VM_MEM_MIB`, ports, IPs) need no rebuild — just
 `cleanup.sh && start.sh`. The kernel and base paths are hardcoded there and in
-`init_base.sh`, including the fixed `vmlinux-6.1.155` name.
+`init_base.sh`, including the pinned `vmlinux-6.1.188` URL.
 
 ## Where reality differs from the docs
 

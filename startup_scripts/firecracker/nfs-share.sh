@@ -33,14 +33,22 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/config.sh"
 
+# Host-specific values (media path, service user, squash uid) live in .env —
+# see .env.example. Nothing in this file names a particular host or user.
+if [[ -f "${SCRIPT_DIR}/.env" ]]; then
+    source "${SCRIPT_DIR}/.env"
+fi
+
+fail() { echo "ERROR: $1" >&2; exit 1; }
+
 # --- Read-only side (rclone serve sftp) ---
 # Host path of the media library; served as the SFTP root. Any fs works.
-RO_PATH="/run/media/corey/SHREE_01/DHARMA_BOB"
-RO_PORT="2022"
+RO_PATH="${NFS_RO_PATH:-}"
+# RO_PORT comes from config.sh (must stay in HOST_SERVICE_PORTS there).
 RO_USER="rag-reader"          # SFTP username (auth is key-only, no system account)
 # Host account the rclone service runs as — it must be able to read the
 # media files (udisks mounts them owned by this user).
-SERVE_USER="corey"
+SERVE_USER="${NFS_SERVE_USER:-}"
 # Keypair lives under keys/ (gitignored); pubkey copied where the service
 # can read it (/root is not readable by the service user). Renamed away
 # from SSH_KEY to avoid shadowing config.sh's VM-login key.
@@ -53,14 +61,19 @@ RW_EXPORT="/srv/rag-scrape"
 # Unprivileged host user all NFS requests are squashed to. The VM's
 # root can claim any UID over AUTH_SYS NFS; all_squash neutralizes that.
 SQUASH_USER="rag-scraper"
-SQUASH_UID="1005"
+SQUASH_UID="${NFS_SQUASH_UID:-}"
 # Client subnet as seen by the HOST. VM traffic leaves the netns
 # MASQUERADEd, so the source is the veth subnet, NOT 172.16.0.2.
 CLIENT_SUBNET="${VETH_SUBNET}"
 
 NFS_UNIT="nfs-server"
 
-fail() { echo "ERROR: $1" >&2; exit 1; }
+# Ports this script serves must be firewalled open via config.sh; nothing
+# else links them, and a mismatch fails silently at the guest.
+for _PORT in "$RO_PORT" 2049; do
+    [[ " $HOST_SERVICE_PORTS " == *" $_PORT "* ]] || fail "port ${_PORT} is missing from HOST_SERVICE_PORTS in config.sh — the VM firewall will block it"
+done
+unset _PORT
 
 # NFS rw export needs POSIX filehandles and chown — exFAT/NTFS/FAT can't
 # provide either. (The ro side doesn't use NFS, so it has no fs limits.)
@@ -72,6 +85,14 @@ require_rw_exportable_fs() {
             fail "$DIR is on a $FSTYPE filesystem, which cannot serve the rw NFS export (no chown, no POSIX ownership). Use an ext4 path for RW_EXPORT."
             ;;
     esac
+}
+
+# Host-specific sharing values are required by setup and start only; stop,
+# status and vm are informative and work without them.
+require_share_config() {
+    [[ -n "$RO_PATH" ]] || fail "NFS_RO_PATH not set — add it to .env (see .env.example)"
+    [[ -n "$SERVE_USER" ]] || fail "NFS_SERVE_USER not set — add it to .env (see .env.example)"
+    [[ -n "$SQUASH_UID" ]] || fail "NFS_SQUASH_UID not set — add it to .env (see .env.example)"
 }
 
 require_installed() {
@@ -91,6 +112,7 @@ wait_for_port() {
 }
 
 cmd_setup() {
+    require_share_config
     # --- NFS rw scratch ---
     command -v exportfs >/dev/null 2>&1 || fail "nfs-kernel-server not installed — run: sudo apt install nfs-kernel-server, then re-run setup"
     command -v rclone >/dev/null 2>&1 || fail "rclone not installed — run: sudo apt install rclone, then re-run setup"
@@ -117,8 +139,12 @@ cmd_setup() {
     if grep -q 'nfs-share.sh managed' /etc/nfs.conf 2>/dev/null; then
         :  # already configured by a previous run
     elif grep -q '^\[nfsd\]' /etc/nfs.conf 2>/dev/null; then
-        echo "NOTE: /etc/nfs.conf already has an [nfsd] section."
-        echo "      Make sure it contains: vers3=n"
+        if ! grep -qE '^[[:space:]]*vers3[[:space:]]*=[[:space:]]*n' /etc/nfs.conf; then
+            fail "/etc/nfs.conf already has an [nfsd] section without 'vers3=n'.
+  Add 'vers3=n' under [nfsd] (and remove any 'vers3=y') — the export is NFSv4-only:
+  without it rpcbind (111) and mountd (20048) listen and the firewall blocks the share."
+        fi
+        echo "/etc/nfs.conf already has [nfsd] with vers3=n."
     else
         echo "Appending NFSv4-only block to /etc/nfs.conf..."
         sudo tee -a /etc/nfs.conf > /dev/null << EOF
@@ -138,8 +164,14 @@ EOF
     fi
 
     # --- rclone read-only library ---
-    [[ -n "$RO_PATH" ]] || fail "RO_PATH is empty — set it at the top of the script."
     if [[ ! -f "$RO_KEYPAIR" ]]; then
+        if [[ -f "$BASE_ROOTFS" ]]; then
+            fail "no keypair at $RO_KEYPAIR, but a base image already exists.
+  The guest bakes in the private key at build time, so a freshly generated one would not match.
+  Options: rebuild the base, or generate the key and inject it into each overlay:
+    ssh-keygen -t ed25519 -N '' -f $RO_KEYPAIR -C rag-reader-vm
+    ./inject.sh <overlay_name> $RO_KEYPAIR /root/.ssh/rclone_sftp_ed25519"
+        fi
         echo "Generating keypair: $RO_KEYPAIR"
         ssh-keygen -t ed25519 -N "" -f "$RO_KEYPAIR" -C "rag-reader-vm" -q
     fi
@@ -180,14 +212,19 @@ EOF
 }
 
 cmd_start() {
+    require_share_config
     require_installed
     [[ -d "$RO_PATH" ]] || fail "Media volume not mounted at $RO_PATH — plug in / mount it first."
-    sudo systemctl start "$RO_UNIT"
+    # A failed start must not abort under set -e — wait_for_port reports it
+    # with the journalctl hint below.
+    sudo systemctl start "$RO_UNIT" || true
     wait_for_port "$RO_PORT" || fail "rclone not listening on $RO_PORT — check: journalctl -u ${RO_UNIT}"
 
-    sudo systemctl start "$NFS_UNIT"
+    sudo systemctl start "$NFS_UNIT" || true
     sudo exportfs -ra
     wait_for_port 2049 || fail "nfsd not listening on 2049 — check: journalctl -u ${NFS_UNIT}"
+    sudo exportfs -v 2>/dev/null | grep -qF "$RW_EXPORT" \
+        || fail "RW export $RW_EXPORT is not active — run: sudo ./nfs-share.sh setup"
 
     echo "Sharing is up."
     echo "Active NFS exports:"
@@ -208,15 +245,8 @@ cmd_status() {
 }
 
 cmd_vm() {
-    echo "Copy the private key into the VM (from the host):"
-    echo "  scp -i ${SCRIPT_DIR}/keys/debian-trixie.id_rsa ${RO_KEYPAIR} root@${VM_IP}:/root/.ssh/rclone_sftp_ed25519"
-    echo ""
-    echo "In the VM:"
-    echo "  apt install sshfs"
-    echo "  sshfs -p ${RO_PORT} -o ro,reconnect,ServerAliveInterval=15,ServerAliveCountMax=3,\\"
-    echo "    kernel_cache,cache=yes,entry_timeout=120,attr_timeout=120,compression=no,\\"
-    echo "    IdentityFile=/root/.ssh/rclone_sftp_ed25519,StrictHostKeyChecking=no \\"
-    echo "    ${RO_USER}@${VETH_HOST_IP}:/ /mnt/library"
+    echo "In the VM (both clients and the key are preinstalled in the base image):"
+    echo "  sshfs -p ${RO_PORT} -o ro,reconnect,ServerAliveInterval=15,ServerAliveCountMax=3,kernel_cache,cache=yes,entry_timeout=120,attr_timeout=120,compression=no,IdentityFile=/root/.ssh/rclone_sftp_ed25519,StrictHostKeyChecking=no ${RO_USER}@${VETH_HOST_IP}:/ /mnt/library"
     echo "  mount -t nfs4 ${VETH_HOST_IP}:${RW_EXPORT} /mnt/scrape"
     echo ""
     echo "The served path (${RO_PATH}) appears as / inside the sshfs mount."

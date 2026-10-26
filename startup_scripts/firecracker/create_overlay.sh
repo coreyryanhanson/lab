@@ -12,7 +12,19 @@ if [ -z "$OVERLAY_NAME" ]; then
     echo "The overlay will be a thin writable layer on top of the base rootfs."
     echo ""
     echo "Existing overlays:"
-    ls -1 "${OVERLAY_DIR}/" 2>/dev/null | sed 's/\.ext4$//' || echo "  (none)"
+    list_overlays
+    exit 1
+fi
+
+# A name containing "/" would truncate/mkfs an arbitrary path below
+if [[ "$OVERLAY_NAME" == */* ]]; then
+    echo "Error: overlay name must be a plain name (no path separators)."
+    exit 1
+fi
+
+if [ ! -f "$BASE_ROOTFS" ]; then
+    echo "ERROR: Base rootfs not found: $BASE_ROOTFS"
+    echo "Run ./init_base.sh first."
     exit 1
 fi
 
@@ -30,19 +42,26 @@ echo "  Path: $OVERLAY_PATH"
 
 mkdir -p "$OVERLAY_DIR"
 
-# Create a sparse 8G file (only uses space as written)
-truncate -s 8G "$OVERLAY_PATH"
+# Create a sparse 32G file (only uses space as written)
+truncate -s 32G "$OVERLAY_PATH"
 
 # Format as ext4
 sudo mkfs.ext4 -F "$OVERLAY_PATH" > /dev/null 2>&1
 
 # Pre-create overlay directories needed by overlay-init
-sudo mkdir -p /tmp/overlay-mount
-sudo mount -o loop "$OVERLAY_PATH" /tmp/overlay-mount
-sudo mkdir -p /tmp/overlay-mount/root
-sudo mkdir -p /tmp/overlay-mount/work
-sudo umount /tmp/overlay-mount
-sudo rmdir /tmp/overlay-mount
+# mktemp + trap so a failure here never leaks the loop mount (a leftover
+# fixed /tmp/overlay-mount would silently stack a second mount on the next run)
+MOUNT_POINT=$(mktemp -d /tmp/fc-overlay-create-XXXXXX)
+cleanup_mount() {
+    sudo umount "$MOUNT_POINT" 2>/dev/null || true
+    sudo rmdir "$MOUNT_POINT" 2>/dev/null || true
+}
+trap cleanup_mount EXIT
+sudo mount -o loop "$OVERLAY_PATH" "$MOUNT_POINT"
+sudo mkdir -p "$MOUNT_POINT/root" "$MOUNT_POINT/work"
+sudo umount "$MOUNT_POINT"
+trap - EXIT
+rmdir "$MOUNT_POINT"
 
 # Set ownership so jailer user can write to the overlay
 sudo chown ${JAILER_UID}:${JAILER_GID} "$OVERLAY_PATH"

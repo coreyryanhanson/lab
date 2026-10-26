@@ -1,13 +1,14 @@
 {
-  "lastChangelogVersion": "0.86.1",
+  "retry": {
+    "maxRetries": 6
+  },
+  "lastChangelogVersion": "1.4.0",
   "defaultThinkingLevel": "high",
   "defaultProvider": "venice",
   "enabledModels": [
     "venice/z-ai-glm-5-3-flash",
     "venice/google-gemma-4-31b-it",
-    "venice/kimi-k3",
-    "venice/z-ai-glm-5-3",
-    "venice/deepseek-v4-1-flash"
+    "venice/deepseek-v4-1-flash-1017"
   ],
   "searxng": {
     "url": "http://127.0.0.1:8888"
@@ -29,23 +30,23 @@
       {
         "name": "chromium-py",
         "dir": "chromium-py",
-        "enabled": true,
+        "enabled": false,
         "config": {
-          "pythonPath": "/root/pi-browser/packages/pi-lean-portal/backends/python-base/.venv/bin/python3"
+          "pythonPath": "/root/pi-lean-dimension/packages/pi-lean-portal/backends/python-base/.venv/bin/python3"
         }
       },
       {
         "name": "firefox-py",
         "dir": "firefox-py",
-        "enabled": true,
+        "enabled": false,
         "config": {
-          "pythonPath": "/root/pi-browser/packages/pi-lean-portal/backends/python-base/.venv/bin/python3"
+          "pythonPath": "/root/pi-lean-dimension/packages/pi-lean-portal/backends/python-base/.venv/bin/python3"
         }
       },
       {
         "name": "camoufox-py",
         "dir": "camoufox-py",
-        "enabled": true,
+        "enabled": false,
         "config": {
           "pythonPath": "/root/.pi/agent/pi-lean-portal/user-backends/camoufox-py/.venv/bin/python3"
         }
@@ -53,7 +54,7 @@
       {
         "name": "invisible-py",
         "dir": "invisible-py",
-        "enabled": true,
+        "enabled": false,
         "config": {
           "pythonPath": "/root/.pi/agent/pi-lean-portal/user-backends/invisible-py/.venv/bin/python3"
         }
@@ -67,21 +68,26 @@
   "packages": [
     "npm:@juicesharp/rpiv-todo",
     "npm:@juicesharp/rpiv-ask-user-question",
-    "npm:pi-simplify",
-    "npm:pi-intercom",
     "npm:pi-prompt-template-model",
     "git:github.com/DietrichGebert/ponytail",
-    "/root/.pi/agent/pi-init-plan",
     "npm:pi-file-injector",
     "npm:pi-agents-init",
     "npm:pi-lens",
-    "git:github.com/coreyryanhanson/pi-grill-me",
-    "npm:pi-tbox",
+    "npm:pi-intercom",
     "npm:pi-subagents",
     "npm:pi-lean-dimension",
-    "../../knowledge-base"
+    "npm:pi-tbox",
+    "npm:gnubrain"
   ],
   "defaultModel": "z-ai-glm-5-3-flash",
+  "subagents": {
+    "modelScope": {
+      "enforce": true,
+      "allow": [
+        "scoped"
+      ]
+    }
+  },
   "branchSummary": {
     "reserveTokens": 32768
   },
@@ -90,8 +96,25 @@
     "baseUrl": "http://192.168.100.1:6806",
     "apiToken": "$SIYUAN_API_TOKEN",
     "kbs": [
+      {
+        "name": "recipes",
+        "notebook": "20260915101405-sfkqwfk"
+      },
+      {
+        "name": "scratch",
+        "notebook": "20260915160638-m2d2gjf"
+      },
+      {
+        "name": "dharma-bob",
+        "notebook": "20261024165808-wb4n6xg"
+      },
+      {
+        "name": "db-planning",
+        "notebook": "20261024160013-rs4a9jp"
+      }
     ],
     "defaultKBs": [
+      "recipes"
     ],
     "allowUnattendedWrites": true,
     "writeConfirmTimeout": 60
@@ -105,6 +128,10 @@
     },
     "toolset-state:pi-lean-dimension.api": {
       "enabled": false
+    },
+    "toolset-state:tbox.mcp@rea": {
+      "enabled": false
     }
-  }
+  },
+  "hideThinkingBlock": false
 }

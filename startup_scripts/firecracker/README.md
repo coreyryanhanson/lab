@@ -85,7 +85,7 @@ parameters, which are parsed by the `fcnet-setup.sh` service inside the VM.
 ## Prerequisites
 
 - Linux with KVM support (`/dev/kvm` must be accessible)
-- Firecracker binary (v1.15.1 or compatible)
+- Firecracker binary (v1.17.0 or compatible; placed manually in `release-v1.17.0-x86_64/`)
 - Jailer binary (matching Firecracker version)
 - Root/sudo access
 - Tools: `ip`, `iptables`, `jq`, `e2fsprogs`, `debootstrap`
@@ -112,7 +112,7 @@ sudo usermod -aG kvm $USER
 │   ├── debian-trixie-rootfs/      # Debootstrap working directory (intermediate)
 │   └── rootfs.ext4                # Base rootfs image (read-only)
 ├── images/
-│   └── vmlinux-6.1.155            # Uncompressed kernel binary
+│   └── vmlinux-6.1.188            # Guest kernel (prebuilt Firecracker CI download, FUSE-enabled)
 ├── keys/
 │   ├── debian-trixie.id_rsa       # SSH private key (DO NOT COMMIT)
 │   └── debian-trixie.id_rsa.pub  # SSH public key
@@ -133,9 +133,9 @@ sudo usermod -aG kvm $USER
 │       └── install-nvm-node.sh      # nvm + Node.js installer for chroot
 ├── .env                            # Environment variables / secrets (DO NOT COMMIT)
 ├── .env.example                    # Environment variable template
-├── release-v1.15.1-x86_64/
-│   ├── firecracker-v1.15.1-x86_64
-│   ├── jailer-v1.15.1-x86_64
+├── release-v1.17.0-x86_64/
+│   ├── firecracker-v1.17.0-x86_64
+│   ├── jailer-v1.17.0-x86_64
 │   └── ...                        # Other Firecracker release files
 ├── overlays/
 │   ├── project-a.ext4             # Writable overlay for project-a
@@ -166,15 +166,15 @@ All settings are centralized in `config.sh`. Key variables:
 | `FC_MAC` | Guest MAC address | `06:00:AC:10:00:02` |
 | `JAILER_UID` | User ID for jailer process | `1000` |
 | `JAILER_GID` | Group ID for jailer process | `1000` |
-| `KERNEL` | Path to kernel binary | `./images/vmlinux-6.1.155` |
+| `KERNEL` | Path to kernel binary (downloaded by `init_base.sh`, verified FUSE + NFSv4 for sshfs) | `./images/vmlinux-6.1.188` |
 | `BASE_ROOTFS` | Path to base rootfs image | `./base/rootfs.ext4` |
-| `HOST_SERVICE_PORTS` | Host ports accessible from VM (space-separated) | `"8001"` |
+| `HOST_SERVICE_PORTS` | Host ports accessible from VM (space-separated) | `"8001 12315 6806 2049 2022"` |
 
 ## Usage
 
 ### 1. Initialize the Base Image
 
-This downloads the kernel and creates the base rootfs with Debian Trixie:
+This downloads the prebuilt Firecracker CI kernel (verified for FUSE + NFSv4) and creates the base rootfs with Debian Trixie:
 
 ```bash
 sudo ./init_base.sh
@@ -182,10 +182,10 @@ sudo ./init_base.sh
 
 This will:
 
-- Download the Firecracker kernel
+- Download the prebuilt Firecracker CI guest kernel and verify its config (`CONFIG_FUSE_FS=y` for sshfs, NFSv4 for the rw share)
 - Run `debootstrap` for a minimal Debian Trixie install
 - Install SSH, Python 3, Node.js, Pi Coding Agent, and common utilities
-- Create SSH keys for root login
+- Create SSH keys for root login and the rclone SFTP key (read-only library)
 - Install Pi config, packages, extensions, and prompts from `config/pi/`
 - Inject environment variables from `.env` (API keys, git config, etc.)
 - Generate the ext4 base image at `base/rootfs.ext4`
@@ -411,7 +411,8 @@ VM even if the port is allowed.
 
 All environment variables are managed through a single `.env` file (copy from
 `.env.example`). These are injected into the VM at build time via a profile
-script at `/etc/profile.d/99-vm-env.sh`, making them available to all processes.
+script at `/etc/profile.d/99-vm-env.sh` (login shells) and sourced from
+`/root/.bashrc` (interactive shells).
 
 To configure before building:
 
@@ -551,12 +552,12 @@ sudo ip link del fc-veth0
 sudo firewall-cmd --zone=public --remove-rich-rule='rule family="ipv4" source address="192.168.100.0/24" port port="8001" protocol="tcp" accept'
 
 # Unmount bind mounts
-sudo umount /srv/jailer/firecracker-v1.15.1-x86_64/vm1/root/rootfs.ext4
-sudo umount /srv/jailer/firecracker-v1.15.1-x86_64/vm1/root/overlay.ext4
-sudo umount /srv/jailer/firecracker-v1.15.1-x86_64/vm1/root
+sudo umount /srv/jailer/firecracker-v1.17.0-x86_64/vm1/root/rootfs.ext4
+sudo umount /srv/jailer/firecracker-v1.17.0-x86_64/vm1/root/overlay.ext4
+sudo umount /srv/jailer/firecracker-v1.17.0-x86_64/vm1/root
 
 # Remove chroot
-sudo rm -rf /srv/jailer/firecracker-v1.15.1-x86_64/vm1
+sudo rm -rf /srv/jailer/firecracker-v1.17.0-x86_64/vm1
 ```
 
 ## File Reference
@@ -570,7 +571,7 @@ VM settings, paths, and network parameters.
 
 Builds the base rootfs image from scratch:
 
-- Downloads Firecracker-compatible kernel
+- Downloads the prebuilt Firecracker CI guest kernel (verifies FUSE + NFSv4)
 - Runs debootstrap for Debian Trixie
 - Installs system packages and utilities
 - Configures SSH, networking, and overlay-init

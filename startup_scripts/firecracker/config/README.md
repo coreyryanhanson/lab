@@ -80,9 +80,10 @@ providing web search capabilities to the Pi search tools.
   - Valkey (Redis) disabled — no caching backend
   - Default search categories and engine configuration
 
-The SearXNG service is expected to be running on the host. The
-`pi-lean-search` tool (from the `pi-lean-dimension` Pi package) connects to
-`http://127.0.0.1:8888` for search queries.
+The SearXNG service is installed into the guest by `init_base.sh` and runs
+as a guest systemd unit on `127.0.0.1:8888`. The `pi-lean-search` tool (from
+the `pi-lean-dimension` Pi package) connects to `http://127.0.0.1:8888` for
+search queries.
 
 ## Chroot Build Scripts
 

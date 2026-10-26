@@ -10,7 +10,7 @@ if [ -z "$OVERLAY_NAME" ]; then
     echo "Usage: $0 <overlay_name>"
     echo ""
     echo "Available overlays:"
-    ls -1 "${OVERLAY_DIR}/" 2>/dev/null | grep '\.ext4$' | sed 's/\.ext4$//' || echo "  (none)"
+    list_overlays
     echo ""
     echo "Create a new overlay with: ./create_overlay.sh <name>"
     exit 1
@@ -27,7 +27,7 @@ fi
 echo "Starting VM with overlay: $OVERLAY_NAME"
 
 # Detect default host interface
-HOST_IFACE=$(ip -j route list default | jq -r '.[0].dev' 2>/dev/null || echo "")
+HOST_IFACE=$(ip -j route list default | jq -r '.[0].dev // empty' 2>/dev/null || echo "")
 if [ -z "$HOST_IFACE" ]; then
     echo "ERROR: Could not detect default network interface"
     exit 1
@@ -46,6 +46,16 @@ done
 if [ ! -f "$BASE_ROOTFS" ]; then
     echo "ERROR: Base rootfs not found: $BASE_ROOTFS"
     echo "Run ./init_base.sh first"
+    exit 1
+fi
+
+# The readiness probe ssh's as the invoking user; an unreadable key (e.g. a
+# root-owned one from a sudoed init_base.sh) fails all probes and would kill
+# a healthy VM, so fail fast before any resources are created.
+if [ ! -r "$SSH_KEY" ]; then
+    echo "ERROR: Cannot read SSH key: $SSH_KEY"
+    echo "If it is root-owned (init_base.sh run with sudo), fix with:"
+    echo "  sudo chown -R \"$(id -un)\" \"$KEY_DIR\""
     exit 1
 fi
 
@@ -102,7 +112,7 @@ fi
 # Clean up any previous run
 # ============================================================
 echo "Cleaning up previous resources..."
-"${SCRIPT_DIR}/cleanup.sh" > /dev/null 2>&1 || true
+"${SCRIPT_DIR}/cleanup.sh"
 
 # ============================================================
 # Boot args (always with overlay)
@@ -115,11 +125,14 @@ KERNEL_BOOT_ARGS="console=ttyS0 reboot=k panic=1 net.ifnames=0 biosdevname=0 ove
 cleanup_on_error() {
     echo ""
     echo "Error occurred, cleaning up..."
-    sudo umount "${CHROOT_DIR}/overlay.ext4" 2>/dev/null || true
-    sudo umount "${CHROOT_DIR}/rootfs.ext4" 2>/dev/null || true
-    sudo umount "${CHROOT_DIR}" 2>/dev/null || true
-    sudo rm -rf "/srv/jailer/${FC_BINARY_NAME}/${VM_ID}"
-    "${SCRIPT_DIR}/cleanup.sh" > /dev/null 2>&1 || true
+    # Dump the firecracker log first — cleanup.sh deletes it, and it is the
+    # only record of why the boot failed.
+    if [ -f "${SCRIPT_DIR}/firecracker-${VM_ID}.log" ]; then
+        echo "----- firecracker-${VM_ID}.log (last 40 lines) -----"
+        tail -n 40 "${SCRIPT_DIR}/firecracker-${VM_ID}.log"
+        echo "----------------------------------------------------"
+    fi
+    "${SCRIPT_DIR}/cleanup.sh" || true
     exit 1
 }
 
@@ -218,23 +231,40 @@ sudo ip netns exec $NETNS iptables -t nat -A POSTROUTING -s ${VM_IP}${VM_ROUTE_M
 sudo ip netns exec $NETNS iptables -A FORWARD -i $TAP_DEV -o $VETH_NS -j ACCEPT
 sudo ip netns exec $NETNS iptables -A FORWARD -i $VETH_NS -o $TAP_DEV -j ACCEPT
 sudo ip route add ${VM_IP}${VM_ROUTE_MASK} via ${VETH_NS_IP}
+# Remember the host's forwarding state and the interface the rules were bound
+# to, so cleanup.sh can restore/remove them even if the default route moved.
+# sudo'd so a non-sudo start/cleanup can still read/truncate them after a sudoed run
+sysctl -n net.ipv4.ip_forward | sudo tee "${IP_FORWARD_STATE}" > /dev/null
+if [ -n "$HOST_IFACE" ]; then
+    printf '%s' "$HOST_IFACE" | sudo tee "${HOST_IFACE_STATE}" > /dev/null
+fi
 sudo sysctl -w net.ipv4.ip_forward=1 > /dev/null
-sudo iptables -A FORWARD -i $VETH_HOST -o $HOST_IFACE -j ACCEPT
-sudo iptables -A FORWARD -i $HOST_IFACE -o $VETH_HOST -m state --state RELATED,ESTABLISHED -j ACCEPT
-sudo iptables -t nat -A POSTROUTING -s ${VETH_SUBNET} -o $HOST_IFACE -j MASQUERADE
+# -C guard keeps repeated starts from stacking duplicate host rules
+sudo iptables -C FORWARD -i $VETH_HOST -o $HOST_IFACE -j ACCEPT 2>/dev/null || \
+    sudo iptables -A FORWARD -i $VETH_HOST -o $HOST_IFACE -j ACCEPT
+sudo iptables -C FORWARD -i $HOST_IFACE -o $VETH_HOST -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || \
+    sudo iptables -A FORWARD -i $HOST_IFACE -o $VETH_HOST -m state --state RELATED,ESTABLISHED -j ACCEPT
+sudo iptables -t nat -C POSTROUTING -s ${VETH_SUBNET} -o $HOST_IFACE -j MASQUERADE 2>/dev/null || \
+    sudo iptables -t nat -A POSTROUTING -s ${VETH_SUBNET} -o $HOST_IFACE -j MASQUERADE
 
 # ============================================================
 # Firewall: Allow VM to reach host services (local LLM, etc.)
 # ============================================================
 echo "Configuring firewall for VM access..."
 
-# Allow VM subnet to reach specific host ports
-for PORT in $HOST_SERVICE_PORTS; do
-    sudo firewall-cmd --zone=public --add-rich-rule="rule family=\"ipv4\" source address=\"${VETH_SUBNET}\" port port=\"${PORT}\" protocol=\"tcp\" accept" 2>/dev/null || true
-done
+# Allow VM subnet to reach specific host ports. Target the default zone:
+# the veth lives there, so a non-"public" default zone still gets the rules.
+ZONE="$(firewall-cmd --get-default-zone 2>/dev/null || true)"
+if [ -z "$ZONE" ]; then
+    echo "WARNING: firewalld default zone not detected; skipping firewall rules (guest cannot reach host services)." >&2
+else
+    for PORT in $HOST_SERVICE_PORTS; do
+        sudo firewall-cmd --zone="$ZONE" --add-rich-rule="rule family=\"ipv4\" source address=\"${VETH_SUBNET}\" port port=\"${PORT}\" protocol=\"tcp\" accept" 2>/dev/null || true
+    done
+fi
 
 # Disable rp_filter on veth to prevent kernel from dropping VM->host packets
-sudo sysctl -w net.ipv4.conf.fc-veth0.rp_filter=0 > /dev/null 2>&1 || true
+sudo sysctl -w "net.ipv4.conf.${VETH_HOST}.rp_filter=0" > /dev/null 2>&1 || true
 
 # ============================================================
 # Start Firecracker with jailer
@@ -257,13 +287,12 @@ sudo $JAILER \
 echo "Waiting for VM to be ready..."
 MAX_WAIT=30
 for i in $(seq 1 $MAX_WAIT); do
-    if ssh -i ${SSH_KEY} -o ConnectTimeout=1 -o StrictHostKeyChecking=no root@${VM_IP} true 2>/dev/null; then
+    if ssh -i "${SSH_KEY}" -o ConnectTimeout=1 -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@${VM_IP} true 2>/dev/null; then
         echo "VM is ready!"
         break
     fi
     if [ $i -eq $MAX_WAIT ]; then
         echo "ERROR: VM did not become reachable within ${MAX_WAIT}s"
-        echo "Check logs: ${SCRIPT_DIR}/firecracker-${VM_ID}.log"
         cleanup_on_error
     fi
     sleep 1
