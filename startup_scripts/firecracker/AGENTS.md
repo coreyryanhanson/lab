@@ -127,17 +127,22 @@ Guest disk is small by design — bulk data belongs on the host NFS shares.
 
 - Guest `172.16.0.2` (netns `fc-vm1`) → host reachable at `192.168.100.1`, **not**
   localhost. Host services must bind `0.0.0.0` and be listed in
-  `HOST_SERVICE_PORTS` (`8001 12315 6806 2049` today); the `firewall-cmd` rich
+  `HOST_SERVICE_PORTS` (`8001 12315 6806 2049 2022` today); the `firewall-cmd` rich
   rules are only (re)applied by `start.sh`, so add a port then
   `cleanup.sh && start.sh`.
 - Guest IP/routes/DNS come from kernel boot args (`start.sh` builds them), parsed
   by the `fcnet-setup` service in the base image — there is no DHCP.
-- NFS shares (`nfs-share.sh setup|start|stop|status`, details in `nfs.md`): exports
-  must allow `192.168.100.0/24` because VM traffic is MASQUERADEd to the veth
-  subnet; `172.16.0.2` silently gets "access denied". Port 2049 only (forced
-  NFSv4, `vers3=n`), both exports `all_squash` to uid 1005. Export paths live at
-  the top of `nfs-share.sh` (`RO_EXPORT` under `/root/bob/dharmabob_rag`, rw
-  scratch `/srv/rag-scrape`).
+- Sharing (`nfs-share.sh setup|start|stop|status|vm`, details in `nfs.md`): the
+  read-only media library is served by `rclone serve sftp --read-only`
+  (port 2022, bound to the veth IP, key auth via `keys/` — gitignored) and
+  works on any filesystem — including the exFAT hotplug volume. The rw
+  scratch is NFSv4 (port 2049 only, forced via `vers3=n`); exports must
+  allow `192.168.100.0/24` because VM traffic is MASQUERADEd to the veth
+  subnet — `172.16.0.2` silently gets "access denied" — and `all_squash` to
+  uid 1005 is mandatory (AUTH_SYS trusts client UID claims). Paths live at
+  the top of `nfs-share.sh` (`RO_PATH` for the library, rw scratch
+  `/srv/rag-scrape`). Port 22 (host sshd) is deliberately NOT opened to the
+  VM.
 
 ## Resource / config knobs
 

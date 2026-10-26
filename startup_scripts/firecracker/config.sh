@@ -15,7 +15,8 @@ VM_ROUTE_MASK="/32"
 MASK="/30"
 FC_MAC="06:00:AC:10:00:02"
 # Host services accessible from VM
-HOST_SERVICE_PORTS="8001 12315 6806 2049"
+# 8001 llama.cpp | 6806 ? | 2049 NFSv4 (rw scratch) | 2022 rclone sftp (ro library)
+HOST_SERVICE_PORTS="8001 12315 6806 2049 2022"
 # VM resources
 VM_VCPUS=8
 VM_MEM_MIB=16384
