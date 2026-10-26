@@ -43,6 +43,18 @@ NFS_UNIT="nfs-server"   # Debian trixie unit name; alias for nfs-kernel-server
 
 fail() { echo "ERROR: $1" >&2; exit 1; }
 
+# NFS export needs POSIX filehandles — exFAT/NTFS/FAT can't provide them
+# (exportfs: "does not support NFS export") and don't honor chown.
+require_exportable_fs() {
+    local DIR="$1" FSTYPE
+    FSTYPE=$(findmnt -no FSTYPE --target "$DIR" 2>/dev/null || true)
+    case "$FSTYPE" in
+        exfat|ntfs|ntfs3|vfat|fuseblk)
+            fail "$DIR is on a $FSTYPE filesystem, which cannot be NFS-exported (and doesn't support ownership).\n       Either reformat the volume as ext4, or create an ext4 loopback image on it and export the loop mount (see nfs.md)."
+            ;;
+    esac
+}
+
 require_installed() {
     command -v exportfs >/dev/null 2>&1 || fail "nfs-kernel-server not installed. Run: sudo apt install nfs-kernel-server"
     [[ -f /etc/exports ]] || fail "/etc/exports missing. Run: sudo ./nfs-share.sh setup"
@@ -67,6 +79,7 @@ cmd_setup() {
 
     # Scratch dir owned by the squash user
     sudo mkdir -p "$RW_EXPORT"
+    require_exportable_fs "$RW_EXPORT"
     sudo chown "$SQUASH_USER:$SQUASH_USER" "$RW_EXPORT"
 
     # NFSv4-only: single port 2049, no rpcbind/mountd ports needed.
@@ -107,6 +120,8 @@ EOF
 cmd_start() {
     require_installed
     [[ -d "$RO_EXPORT" ]] || fail "Read-only export path $RO_EXPORT does not exist — mount the external media volume first."
+    require_exportable_fs "$RO_EXPORT"
+    require_exportable_fs "$RW_EXPORT"
     sudo systemctl start "$NFS_UNIT"
     sudo exportfs -ra
     # nfsd may take a moment to open the listener

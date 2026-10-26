@@ -78,6 +78,34 @@ over the repo root, and keep the rw scratch **outside** the repo entirely —
 it. Also note the ro and rw exports must be disjoint — one directory
 cannot be both.
 
+### Exporting an exFAT/NTFS volume (loopback workaround)
+
+External media volumes are often formatted exFAT or NTFS, which **cannot be
+NFS-exported**: they can't provide POSIX filehandles (`exportfs: does not
+support NFS export`) and don't honor `chown`, so the squash-user setup would
+silently break too. The `require_exportable_fs` guard in `nfs-share.sh`
+detects this and refuses up front.
+
+If reformatting the volume isn't an option, create an ext4 image *on* the
+volume and export the loop mount instead:
+
+```bash
+# one-time: sparse ext4 image on the exFAT/NTFS volume (size = what you need)
+truncate -s 500G /mnt/media/library.ext4
+sudo mkfs.ext4 -F /mnt/media/library.ext4
+sudo mkdir -p /mnt/media/library-fs
+sudo mount -o loop /mnt/media/library.ext4 /mnt/media/library-fs
+sudo chown rag-scraper:rag-scraper /mnt/media/library-fs
+
+# /etc/fstab on the host so it remounts with the volume:
+# /mnt/media/library.ext4  /mnt/media/library-fs  ext4  loop  0  0
+```
+
+Then point `RO_EXPORT` / `RW_EXPORT` in `nfs-share.sh` at the loop mount
+points (e.g. `/mnt/media/library-fs`). `findmnt` reports the export path as
+ext4 and the guard passes. Small performance cost (one extra fs layer), but
+full POSIX semantics.
+
 ## Starting/stopping sharing (on demand)
 
 ```bash
@@ -112,8 +140,9 @@ on 2049. `stop` closes port 2049 completely.
 
 ## VM side
 
+`nfs-common` is preinstalled in base images, so just mount:
+
 ```bash
-sudo apt install nfs-common          # persists in the read-write overlay
 sudo mkdir -p /mnt/library /mnt/scrape
 sudo mount -t nfs4 192.168.100.1:/root/bob/dharmabob_rag /mnt/library
 sudo mount -t nfs4 192.168.100.1:/srv/rag-scrape        /mnt/scrape
