@@ -188,6 +188,9 @@ After=network.target
 
 [Service]
 User=${SERVE_USER}
+# ProtectHome=read-only breaks rclone's default cache dir (~/.cache/rclone)
+Environment=RCLONE_CACHE_DIR=/var/cache/rclone-ro
+CacheDirectory=rclone-ro
 ExecStart=/usr/bin/rclone serve sftp --read-only --addr ${VETH_HOST_IP}:${RO_PORT} --user ${RO_USER} --authorized-keys ${AUTHKEYS_FILE} ${RO_PATH}
 Restart=on-failure
 RestartSec=2
