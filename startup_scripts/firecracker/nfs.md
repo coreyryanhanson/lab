@@ -78,16 +78,24 @@ over the repo root, and keep the rw scratch **outside** the repo entirely —
 it. Also note the ro and rw exports must be disjoint — one directory
 cannot be both.
 
-### Exporting an exFAT/NTFS volume (loopback workaround)
+### Exporting an exFAT/NTFS volume
 
-External media volumes are often formatted exFAT or NTFS, which **cannot be
-NFS-exported**: they can't provide POSIX filehandles (`exportfs: does not
-support NFS export`) and don't honor `chown`, so the squash-user setup would
-silently break too. The `require_exportable_fs` guard in `nfs-share.sh`
-detects this and refuses up front.
+External media volumes are often formatted exFAT or NTFS. These can't
+provide POSIX filehandles and don't honor `chown`, which is why they were
+historically not NFS-exportable. `require_exportable_fs` in `nfs-share.sh`
+enforces this with two rules:
 
-If reformatting the volume isn't an option, create an ext4 image *on* the
-volume and export the loop mount instead:
+- **Read-only export on exFAT/ntfs3: allowed with a warning.** Kernels
+  >= 6.2 can export exFAT read-only. No ownership semantics — fine for
+  the ro export, since all requests are squashed to one uid and exFAT
+  mounts are world-readable (`fmask=0022/dmask=0022`). This is the
+  zero-copy option: export the volume directly.
+- **Read-write export on exFAT/NTFS/FAT: hard failure.** Ownership
+  semantics are required for the rw scratch export — use an ext4 target
+  (like `/srv/rag-scrape` on the host rootfs).
+
+If your kernel is older than 6.2 (or the volume is vfat/fuseblk), the
+fallback is an ext4 loopback image *on* the volume:
 
 ```bash
 # one-time: sparse ext4 image on the exFAT/NTFS volume (size = what you need)
@@ -123,11 +131,12 @@ RO_EXPORT="/srv/library"
 ```
 
 `start` then bind-mounts the volume onto `/srv/library` (after checking the
-volume is present) before exporting, and `stop` unbinds it. Exports a
-clean single-level path, avoids the deep `/run/media` path entirely, and
-the bind only ever exists while the volume is attached. Workflow when
-swapping volumes: plug in → `sudo ./nfs-share.sh start` → done; unplug
-after `stop`.
+volume is present, and rebinding if the volume remounted as a new
+filesystem while sharing was stopped) before exporting, and `stop` unbinds
+it. Exports a clean single-level path, avoids the deep `/run/media` path
+entirely, and the bind only ever exists while the volume is attached.
+Workflow when swapping volumes: plug in → `sudo ./nfs-share.sh start` →
+done; unplug after `stop`.
 
 ## Starting/stopping sharing (on demand)
 

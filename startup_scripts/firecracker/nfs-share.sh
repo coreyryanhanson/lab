@@ -49,14 +49,24 @@ NFS_UNIT="nfs-server"   # Debian trixie unit name; alias for nfs-kernel-server
 
 fail() { echo "ERROR: $1" >&2; exit 1; }
 
-# NFS export needs POSIX filehandles — exFAT/NTFS/FAT can't provide them
-# (exportfs: "does not support NFS export") and don't honor chown.
+# NFS export needs POSIX filehandles — exFAT/NTFS/FAT historically can't
+# provide them, and none honor chown. Kernels >= 6.2 CAN export exfat
+# read-only (no ownership semantics), so the ro export only warns for
+# that case; everything else is a hard failure.
 require_exportable_fs() {
-    local DIR="$1" FSTYPE
+    local DIR="$1" MODE="${2:-rw}" FSTYPE
     FSTYPE=$(findmnt -no FSTYPE --target "$DIR" 2>/dev/null || true)
     case "$FSTYPE" in
-        exfat|ntfs|ntfs3|vfat|fuseblk)
-            fail "$DIR is on a $FSTYPE filesystem, which cannot be NFS-exported (and doesn't honor chown).
+        exfat|ntfs3)
+            if [[ "$MODE" == ro ]]; then
+                echo "WARNING: $DIR is on $FSTYPE. Read-only export works on kernels >= 6.2"
+                echo "         (no ownership semantics — fine with all_squash + world-readable perms)."
+            else
+                fail "$DIR is on $FSTYPE, which cannot serve the rw export (no chown, no POSIX ownership). Use an ext4 target for $RW_EXPORT."
+            fi
+            ;;
+        vfat|fuseblk|ntfs)
+            fail "$DIR is on a $FSTYPE filesystem, which cannot be NFS-exported.
        Either reformat the volume as ext4, or create an ext4 loopback image on it and export the loop mount (see nfs.md)."
             ;;
     esac
@@ -87,7 +97,7 @@ cmd_setup() {
 
     # Scratch dir owned by the squash user
     sudo mkdir -p "$RW_EXPORT"
-    require_exportable_fs "$RW_EXPORT"
+    require_exportable_fs "$RW_EXPORT" rw
     sudo chown "$SQUASH_USER:$SQUASH_USER" "$RW_EXPORT"
 
     # NFSv4-only: single port 2049, no rpcbind/mountd ports needed.
@@ -138,8 +148,8 @@ cmd_start() {
         mountpoint -q "$RO_EXPORT" || sudo mount --bind "$RO_BIND_SRC" "$RO_EXPORT"
     fi
     [[ -d "$RO_EXPORT" ]] || fail "Read-only export path $RO_EXPORT does not exist — mount the external media volume first."
-    require_exportable_fs "$RO_EXPORT"
-    require_exportable_fs "$RW_EXPORT"
+    require_exportable_fs "$RO_EXPORT" ro
+    require_exportable_fs "$RW_EXPORT" rw
     sudo systemctl start "$NFS_UNIT"
     sudo exportfs -ra
     # nfsd may take a moment to open the listener
