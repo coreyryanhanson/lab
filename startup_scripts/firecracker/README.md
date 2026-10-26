@@ -117,31 +117,20 @@ sudo usermod -aG kvm $USER
 │   ├── debian-trixie.id_rsa       # SSH private key (DO NOT COMMIT)
 │   └── debian-trixie.id_rsa.pub  # SSH public key
 ├── config/
-│   ├── opencode/
-│   │   ├── config.json              # OpenCode configuration template
-│   │   ├── package.json             # Plugin dependency (@opencode-ai/plugin)
-│   │   ├── install_skills.sh        # Installer: copies tools/utils/skills to ~/.config/opencode/
-│   │   ├── skills/
-│   │   │   ├── image-describe/SKILL.md   # Image description skill
-│   │   │   └── image-transcribe/SKILL.md # Image text transcription skill
-│   │   ├── tools/
-│   │   │   ├── image-describe.ts    # Vision LLM image description tool
-│   │   │   ├── image-transcribe.ts  # Vision LLM image transcription tool
-│   │   │   └── search.ts           # SearXNG web search tool (OpenCode plugin)
-│   │   └── utils/
-│   │       └── vision-api.ts        # Venice AI vision API helper
 │   ├── pi/
 │   │   ├── auth.json                # API key config ($VENICE_API_KEY)
-│   │   ├── models.json             # OpenRouter provider (apiKey: $OPENROUTER_API_KEY)
-│   │   ├── settings.json           # Default provider, model, thinking level, browser/searxng config
-│   │   └── extensions/
-│   │       ├── opencode-zen/       # Free Zen models provider extension
-│   │       └── venice-ai/          # Venice AI models provider extension
+│   │   ├── models.json              # Custom providers (gondola-ai, openrouter, venice)
+│   │   ├── settings.json            # Default provider, model, thinking level, browser/searxng config
+│   │   ├── extensions/
+│   │   │   ├── pi-init-plan/        # Plan-mode extension
+│   │   │   ├── subagent/            # Subagent defaults
+│   │   │   └── venice-ai/           # Venice AI models provider extension
+│   │   └── prompts/                 # Prompt templates
 │   ├── searxng/
-│   │   ├── searxng.service         # systemd unit file (granian WSGI)
-│   │   └── settings.yml            # SearXNG instance settings
+│   │   ├── searxng.service          # systemd unit file (granian WSGI)
+│   │   └── settings.yml             # SearXNG instance settings
 │   └── chroot-scripts/
-│       └── install-nvm-node.sh     # nvm + Node.js + OpenCode installer for chroot
+│       └── install-nvm-node.sh      # nvm + Node.js installer for chroot
 ├── .env                            # Environment variables / secrets (DO NOT COMMIT)
 ├── .env.example                    # Environment variable template
 ├── release-v1.15.1-x86_64/
@@ -195,9 +184,9 @@ This will:
 
 - Download the Firecracker kernel
 - Run `debootstrap` for a minimal Debian Trixie install
-- Install SSH, Python 3, Node.js, OpenCode, and common utilities
+- Install SSH, Python 3, Node.js, Pi Coding Agent, and common utilities
 - Create SSH keys for root login
-- Configure OpenCode with `config/opencode/config.json`
+- Install Pi config, packages, extensions, and prompts from `config/pi/`
 - Inject environment variables from `.env` (API keys, git config, etc.)
 - Generate the ext4 base image at `base/rootfs.ext4`
 
@@ -374,7 +363,6 @@ The base rootfs includes:
 - **SSH Server** — Root login with key-based authentication
 - **Python 3** — With pip and venv support
 - **Node.js** — Installed via nvm (LTS version)
-- **OpenCode** — Installed globally via npm (`opencode-ai@latest`)
 - **uv** — Fast Python package manager by Astral
 - **Pi Coding Agent** — Installed via npm (`@earendil-works/pi-coding-agent`)
 - **Common utilities** — curl, wget, git, build-essential, ca-certificates
@@ -419,7 +407,7 @@ HOST_SERVICE_PORTS="8001 3000"
 them. If a service only listens on localhost, it will be unreachable from the
 VM even if the port is allowed.
 
-### OpenCode & VM Configuration
+### Environment & VM Configuration
 
 All environment variables are managed through a single `.env` file (copy from
 `.env.example`). These are injected into the VM at build time via a profile
@@ -428,14 +416,14 @@ script at `/etc/profile.d/99-vm-env.sh`, making them available to all processes.
 To configure before building:
 
 1. Copy `.env.example` to `.env` and fill in your values
-2. Edit `config/opencode/config.json` with your preferred model and provider
+2. Edit `config/pi/settings.json` with your preferred provider and model
 3. Rebuild the base image: `sudo ./init_base.sh`
 
 **Note:** The `.env` file is gitignored to prevent accidentally committing secrets.
 
-For details on Pi Coding Agent extensions (opencode-zen, venice-ai) and
-the pi-lean-dimension browser/search package, OpenCode vision tools and
-skills, the SearXNG service configuration, and chroot build scripts, see
+For details on Pi Coding Agent extensions (venice-ai, pi-init-plan, subagent)
+and the pi-lean-dimension browser/search package, the SearXNG service
+configuration, and chroot build scripts, see
 [`config/README.md`](config/README.md).
 
 ## Security Considerations
@@ -586,8 +574,8 @@ Builds the base rootfs image from scratch:
 - Runs debootstrap for Debian Trixie
 - Installs system packages and utilities
 - Configures SSH, networking, and overlay-init
-- Installs Node.js, OpenCode, Python, and uv
-- Configures OpenCode with `config/opencode/config.json`
+- Installs Node.js, Pi Coding Agent + packages, Python, and uv
+- Installs Pi config, extensions, and prompts from `config/pi/`
 - Injects environment variables from `.env` into the VM
 - Generates ext4 image
 
@@ -708,8 +696,3 @@ mounted inside `base/debian-trixie-rootfs/`, blocking subsequent runs. Covers:
 - Detecting stale mounts inside the rootfs working directory
 - Manual cleanup steps (`sudo umount` for each mount, then `sudo rm -rf`)
 - The EXIT cleanup trap in `init_base.sh` that should prevent this issue
-
-### install_skills.sh
-
-Installs OpenCode vision tools and skills. See [`config/README.md`](config/README.md)
-for details. Located at `config/opencode/install_skills.sh`.

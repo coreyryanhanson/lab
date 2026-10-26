@@ -5,6 +5,7 @@ Collection of shell scripts and reference notes. The main project is the Firecra
 ## Repo layout
 
 - `startup_scripts/firecracker/` — OverlayFS-based Firecracker VM manager (primary focus)
+- `startup_scripts/firecracker/nfs-share.sh` + `nfs.md` — on-demand NFSv4 server for sharing a read-only media library and a rw scratch dir with the VM (port 2049, configured in `HOST_SERVICE_PORTS`)
 - `startup_scripts/firecracker/config/` — Guest VM configuration (Pi Coding Agent, OpenCode, SearXNG, chroot scripts)
 - `startup_scripts/open-webui/` — Open WebUI + SearXNG via podman-compose
 - `bash/common_commands/` — Reference markdown files for ffmpeg, pdftk, podman, ssh, etc.
