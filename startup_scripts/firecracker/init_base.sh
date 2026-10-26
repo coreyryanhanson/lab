@@ -283,7 +283,8 @@ sudo chroot "$ROOTFS_DIR" /bin/bash -c '
     pi install npm:pi-tbox
     pi install npm:gnubrain
     pi install git:github.com/DietrichGebert/ponytail
-    echo "  Pi packages installed: pi-subagents, rpiv-ask-user-question, rpiv-todo, pi-lean-dimension, pi-agents-init, pi-file-injector, pi-prompt-template-model, pi-lens, pi-intercom, pi-tbox, gnubrain, ponytail"
+    pi install git:github.com/coreyryanhanson/pi-grill-me
+    echo "  Pi packages installed: pi-subagents, rpiv-ask-user-question, rpiv-todo, pi-lean-dimension, pi-agents-init, pi-file-injector, pi-prompt-template-model, pi-lens, pi-intercom, pi-tbox, gnubrain, ponytail, pi-grill-me"
 '
 
 # ============================================================

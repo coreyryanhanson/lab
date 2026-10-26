@@ -64,10 +64,11 @@ files into an overlay, but `/etc/profile.d/99-vm-env.sh` still comes from the ba
 - Python 3 + pip/venv, `uv` in `/usr/local/bin`, nvm + Node LTS
   (`config/chroot-scripts/install-nvm-node.sh`). **OpenCode is not installed** —
   Pi Coding Agent is the only agent in the image.
-- Pi Coding Agent + twelve packages via `pi install` (eleven `npm:` —
+- Pi Coding Agent + thirteen packages via `pi install` (eleven `npm:` —
   pi-subagents, `@juicesharp/rpiv-ask-user-question`, `@juicesharp/rpiv-todo`,
   pi-lean-dimension, pi-agents-init, pi-file-injector, pi-prompt-template-model,
-  pi-lens, pi-intercom, pi-tbox, gnubrain — plus ponytail via `git:`),
+  pi-lens, pi-intercom, pi-tbox, gnubrain — plus ponytail and pi-grill-me via
+  `git:`),
   then Playwright Chromium + Firefox (`npx playwright install --with-deps`).
 - SearXNG as a systemd service on `127.0.0.1:8888` (granian; settings from
   `config/searxng/`).
