@@ -29,6 +29,12 @@ source "${SCRIPT_DIR}/config.sh"
 # Read-only export: prefer a data subdirectory over a repo root —
 # an export exposes EVERYTHING under the path, including .git/
 RO_EXPORT="/root/bob/dharmabob_rag"
+# Optional: source dir to bind-mount onto RO_EXPORT at start time (and
+# unbind at stop). Use this when the export target is a hotplug volume
+# mounted at a session-scoped path (e.g. /run/media/...) — do NOT put the
+# bind in fstab: at boot the volume usually isn't there yet. The bind
+# gives NFS a clean, shallow, stable export path.
+RO_BIND_SRC=""
 # Read-write scratch: keep OUTSIDE the ro export and outside the repo
 RW_EXPORT="/srv/rag-scrape"
 # Unprivileged host user all NFS requests are squashed to. The VM's
@@ -50,7 +56,8 @@ require_exportable_fs() {
     FSTYPE=$(findmnt -no FSTYPE --target "$DIR" 2>/dev/null || true)
     case "$FSTYPE" in
         exfat|ntfs|ntfs3|vfat|fuseblk)
-            fail "$DIR is on a $FSTYPE filesystem, which cannot be NFS-exported (and doesn't support ownership).\n       Either reformat the volume as ext4, or create an ext4 loopback image on it and export the loop mount (see nfs.md)."
+            fail "$DIR is on a $FSTYPE filesystem, which cannot be NFS-exported (and doesn't honor chown).
+       Either reformat the volume as ext4, or create an ext4 loopback image on it and export the loop mount (see nfs.md)."
             ;;
     esac
 }
@@ -71,6 +78,7 @@ cmd_setup() {
         fail "uid $SQUASH_UID is already taken by '$(id -un "$SQUASH_UID")' — pick a different SQUASH_UID"
     fi
     if id "$SQUASH_USER" >/dev/null 2>&1; then
+        [[ "$(id -u "$SQUASH_USER")" == "$SQUASH_UID" ]] || fail "user $SQUASH_USER exists with uid $(id -u "$SQUASH_USER"), not SQUASH_UID $SQUASH_UID — reconcile the config"
         echo "User $SQUASH_USER already exists."
     else
         echo "Creating user $SQUASH_USER (uid $SQUASH_UID, no login)..."
@@ -119,6 +127,16 @@ EOF
 
 cmd_start() {
     require_installed
+    if [[ -n "$RO_BIND_SRC" ]]; then
+        [[ -d "$RO_BIND_SRC" ]] || fail "Media volume not mounted at $RO_BIND_SRC — plug in / mount the external volume first."
+        [[ "$RO_BIND_SRC" != "$RO_EXPORT" ]] || fail "RO_BIND_SRC and RO_EXPORT must differ."
+        # Rebind if the existing mount points at a stale superblock
+        # (volume was unplugged without stop and remounted fresh).
+        if mountpoint -q "$RO_EXPORT" && [[ "$(stat -c %d "$RO_EXPORT")" != "$(stat -c %d "$RO_BIND_SRC")" ]]; then
+            sudo umount "$RO_EXPORT"
+        fi
+        mountpoint -q "$RO_EXPORT" || sudo mount --bind "$RO_BIND_SRC" "$RO_EXPORT"
+    fi
     [[ -d "$RO_EXPORT" ]] || fail "Read-only export path $RO_EXPORT does not exist — mount the external media volume first."
     require_exportable_fs "$RO_EXPORT"
     require_exportable_fs "$RW_EXPORT"
@@ -143,6 +161,9 @@ cmd_start() {
 cmd_stop() {
     # No require_installed: stopping an unconfigured host should just be a no-op attempt
     sudo systemctl stop "$NFS_UNIT"
+    if [[ -n "$RO_BIND_SRC" ]] && mountpoint -q "$RO_EXPORT"; then
+        sudo umount "$RO_EXPORT"
+    fi
     echo "NFS sharing stopped (port 2049 closed)."
 }
 

@@ -106,6 +106,29 @@ points (e.g. `/mnt/media/library-fs`). `findmnt` reports the export path as
 ext4 and the guard passes. Small performance cost (one extra fs layer), but
 full POSIX semantics.
 
+### Hotplug volumes: bind at start time, not boot time
+
+If the read-only export is a removable volume that comes and goes (mounted
+by udisks under `/run/media/...`), do **not** create the bind mount in
+`/etc/fstab` — at boot the volume usually isn't there, and a failed local
+mount can stall the boot or drop it into emergency mode.
+
+Instead, let `nfs-share.sh` own the bind: set `RO_BIND_SRC` to the
+volume's path and `RO_EXPORT` to a stable, shallow target:
+
+```bash
+# in nfs-share.sh
+RO_BIND_SRC="/run/media/corey/SHREE_01/DHARMA_BOB"
+RO_EXPORT="/srv/library"
+```
+
+`start` then bind-mounts the volume onto `/srv/library` (after checking the
+volume is present) before exporting, and `stop` unbinds it. Exports a
+clean single-level path, avoids the deep `/run/media` path entirely, and
+the bind only ever exists while the volume is attached. Workflow when
+swapping volumes: plug in → `sudo ./nfs-share.sh start` → done; unplug
+after `stop`.
+
 ## Starting/stopping sharing (on demand)
 
 ```bash
@@ -169,7 +192,12 @@ mounting the ro share `-o ro` on the guest for defense in depth.
    `/etc/nfs.conf` and `sudo exportfs -v`.
 4. `start` fails with "export path does not exist" → the external media
    volume is not mounted. Mount it, then re-run.
-5. Host services reachable from the VM must bind `0.0.0.0` — kernel nfsd
+5. VM mount of the read-only export says "No such file or directory"
+   while `sudo exportfs -v` lists it → the export path is deep and/or
+   crosses mount boundaries (e.g. under `/run/media`), which breaks
+   NFSv4 path resolution. Use the `RO_BIND_SRC` bind setup
+   (see "Hotplug volumes" above).
+6. Host services reachable from the VM must bind `0.0.0.0` — kernel nfsd
    does this by default, but keep it in mind if fronting NFS with anything
    else.
 
