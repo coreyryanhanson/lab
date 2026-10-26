@@ -91,7 +91,8 @@ sudo chroot "$ROOTFS_DIR" /bin/bash -c '
         e2fsprogs \
         gnupg \
         locales \
-        libgtk-3-0
+        libgtk-3-0 \
+        nfs-common
 
     # Generate locale
     sed -i "s/^# *en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/" /etc/locale.gen
