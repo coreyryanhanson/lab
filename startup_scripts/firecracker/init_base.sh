@@ -307,8 +307,10 @@ sudo chroot "$ROOTFS_DIR" /bin/bash -c '
     [ -f /tmp/pi-config/models.json ]   && cp /tmp/pi-config/models.json "$PI_DIR/"
     [ -d /tmp/pi-config/extensions ]    && cp -r /tmp/pi-config/extensions/* "$PI_DIR/extensions/"
     [ -d /tmp/pi-config/prompts ]       && cp -r /tmp/pi-config/prompts/* "$PI_DIR/prompts/"
-'
 
+    # pi-lens global config lives in ~/.pi-lens/, not ~/.pi/agent
+    [ -d /tmp/pi-config/pi-lens ] && mkdir -p "$HOME/.pi-lens" && cp -r /tmp/pi-config/pi-lens/. "$HOME/.pi-lens/"
+'
 sudo rm -rf "$ROOTFS_DIR/tmp/pi-config"
 echo "  Pi config, auth, models, extensions, and prompts installed"
 
