@@ -85,7 +85,7 @@ parameters, which are parsed by the `fcnet-setup.sh` service inside the VM.
 ## Prerequisites
 
 - Linux with KVM support (`/dev/kvm` must be accessible)
-- Firecracker binary (v1.15.1 or compatible)
+- Firecracker binary (v1.17.0 or compatible; placed manually in `release-v1.17.0-x86_64/`)
 - Jailer binary (matching Firecracker version)
 - Root/sudo access
 - Tools: `ip`, `iptables`, `jq`, `e2fsprogs`, `debootstrap`
@@ -112,22 +112,36 @@ sudo usermod -aG kvm $USER
 │   ├── debian-trixie-rootfs/      # Debootstrap working directory (intermediate)
 │   └── rootfs.ext4                # Base rootfs image (read-only)
 ├── images/
-│   └── vmlinux-6.1.155            # Uncompressed kernel binary
+│   └── vmlinux-6.1.188            # Guest kernel (prebuilt Firecracker CI download, FUSE-enabled)
 ├── keys/
 │   ├── debian-trixie.id_rsa       # SSH private key (DO NOT COMMIT)
 │   └── debian-trixie.id_rsa.pub  # SSH public key
 ├── config/
-│   └── opencode-config.json       # OpenCode configuration template
+│   ├── pi/
+│   │   ├── auth.json                # API key config ($VENICE_API_KEY)
+│   │   ├── models.json              # Custom providers (gondola-ai, openrouter, venice)
+│   │   ├── settings.json            # Default provider, model, thinking level, browser/searxng config
+│   │   ├── extensions/
+│   │   │   ├── pi-init-plan/        # Plan-mode extension
+│   │   │   ├── subagent/            # Subagent defaults
+│   │   │   └── venice-ai/           # Venice AI models provider extension
+│   │   └── prompts/                 # Prompt templates
+│   ├── searxng/
+│   │   ├── searxng.service          # systemd unit file (granian WSGI)
+│   │   └── settings.yml             # SearXNG instance settings
+│   └── chroot-scripts/
+│       └── install-nvm-node.sh      # nvm + Node.js installer for chroot
 ├── .env                            # Environment variables / secrets (DO NOT COMMIT)
 ├── .env.example                    # Environment variable template
-├── release-v1.15.1-x86_64/
-│   ├── firecracker-v1.15.1-x86_64
-│   ├── jailer-v1.15.1-x86_64
+├── release-v1.17.0-x86_64/
+│   ├── firecracker-v1.17.0-x86_64
+│   ├── jailer-v1.17.0-x86_64
 │   └── ...                        # Other Firecracker release files
 ├── overlays/
 │   ├── project-a.ext4             # Writable overlay for project-a
 │   ├── project-a.base_checksum    # MD5 of base rootfs when overlay was created
 │   └── ...                        # Other overlay images
+├── rescue.md                      # Troubleshooting: init_base.sh crash recovery
 ├── config.sh                      # Shared configuration variables
 ├── init_base.sh                   # Build the base rootfs image
 ├── create_overlay.sh              # Create a new overlay
@@ -152,26 +166,27 @@ All settings are centralized in `config.sh`. Key variables:
 | `FC_MAC` | Guest MAC address | `06:00:AC:10:00:02` |
 | `JAILER_UID` | User ID for jailer process | `1000` |
 | `JAILER_GID` | Group ID for jailer process | `1000` |
-| `KERNEL` | Path to kernel binary | `./images/vmlinux-6.1.155` |
+| `KERNEL` | Path to kernel binary (downloaded by `init_base.sh`, verified FUSE + NFSv4 for sshfs) | `./images/vmlinux-6.1.188` |
 | `BASE_ROOTFS` | Path to base rootfs image | `./base/rootfs.ext4` |
-| `HOST_SERVICE_PORTS` | Host ports accessible from VM (space-separated) | `"8001"` |
+| `HOST_SERVICE_PORTS` | Host ports accessible from VM (space-separated) | `"8001 12315 6806 2049 2022"` |
 
 ## Usage
 
 ### 1. Initialize the Base Image
 
-This downloads the kernel and creates the base rootfs with Debian Trixie:
+This downloads the prebuilt Firecracker CI kernel (verified for FUSE + NFSv4) and creates the base rootfs with Debian Trixie:
 
 ```bash
 sudo ./init_base.sh
 ```
 
 This will:
-- Download the Firecracker kernel
+
+- Download the prebuilt Firecracker CI guest kernel and verify its config (`CONFIG_FUSE_FS=y` for sshfs, NFSv4 for the rw share)
 - Run `debootstrap` for a minimal Debian Trixie install
-- Install SSH, Python 3, Node.js, OpenCode, and common utilities
-- Create SSH keys for root login
-- Configure OpenCode with `config/opencode-config.json`
+- Install SSH, Python 3, Node.js, Pi Coding Agent, and common utilities
+- Create SSH keys for root login and the rclone SFTP key (read-only library)
+- Install Pi config, packages, extensions, and prompts from `config/pi/`
 - Inject environment variables from `.env` (API keys, git config, etc.)
 - Generate the ext4 base image at `base/rootfs.ext4`
 
@@ -198,6 +213,7 @@ sudo ./start.sh my-project
 ```
 
 This will:
+
 - Verify the overlay checksum matches the current base rootfs
 - Set up the network namespace and routing
 - Configure firewall rules for VM access to host services
@@ -256,6 +272,7 @@ To see what files have been modified or created in an overlay (compared to the b
 ```
 
 This shows:
+
 - Changed files
 - Changed directories
 - Deleted files (whiteout entries)
@@ -346,8 +363,8 @@ The base rootfs includes:
 - **SSH Server** — Root login with key-based authentication
 - **Python 3** — With pip and venv support
 - **Node.js** — Installed via nvm (LTS version)
-- **OpenCode** — Installed globally via npm (`opencode-ai@latest`)
 - **uv** — Fast Python package manager by Astral
+- **Pi Coding Agent** — Installed via npm (`@earendil-works/pi-coding-agent`)
 - **Common utilities** — curl, wget, git, build-essential, ca-certificates
 
 ### Network Configuration
@@ -390,19 +407,25 @@ HOST_SERVICE_PORTS="8001 3000"
 them. If a service only listens on localhost, it will be unreachable from the
 VM even if the port is allowed.
 
-### OpenCode & VM Configuration
+### Environment & VM Configuration
 
 All environment variables are managed through a single `.env` file (copy from
 `.env.example`). These are injected into the VM at build time via a profile
-script at `/etc/profile.d/99-vm-env.sh`, making them available to all processes.
+script at `/etc/profile.d/99-vm-env.sh` (login shells) and sourced from
+`/root/.bashrc` (interactive shells).
 
 To configure before building:
 
 1. Copy `.env.example` to `.env` and fill in your values
-2. Edit `config/opencode/config.json` with your preferred model and provider
+2. Edit `config/pi/settings.json` with your preferred provider and model
 3. Rebuild the base image: `sudo ./init_base.sh`
 
 **Note:** The `.env` file is gitignored to prevent accidentally committing secrets.
+
+For details on Pi Coding Agent extensions (venice-ai, pi-init-plan, subagent)
+and the pi-lean-dimension browser/search package, the SearXNG service
+configuration, and chroot build scripts, see
+[`config/README.md`](config/README.md).
 
 ## Security Considerations
 
@@ -493,6 +516,19 @@ If curl from inside the VM fails with "No route to host":
 sudo firewall-cmd --zone=public --list-rich-rules
 ```
 
+### init_base.sh crash recovery
+
+If `init_base.sh` crashes mid-build (e.g., due to network failure or
+interruption), it may leave `/proc`, `/sys`, and `/dev` mounted inside
+`base/debian-trixie-rootfs/`. This prevents re-running the script because
+`debootstrap` cannot remove the working directory.
+
+See **rescue.md** for the full troubleshooting guide, including:
+
+- How to check for stale mounts inside the rootfs directory
+- Manual cleanup steps (`sudo umount` + `sudo rm -rf`)
+- The EXIT cleanup trap fix that prevents this issue
+
 ### Cleanup stuck resources
 
 ```bash
@@ -516,12 +552,12 @@ sudo ip link del fc-veth0
 sudo firewall-cmd --zone=public --remove-rich-rule='rule family="ipv4" source address="192.168.100.0/24" port port="8001" protocol="tcp" accept'
 
 # Unmount bind mounts
-sudo umount /srv/jailer/firecracker-v1.15.1-x86_64/vm1/root/rootfs.ext4
-sudo umount /srv/jailer/firecracker-v1.15.1-x86_64/vm1/root/overlay.ext4
-sudo umount /srv/jailer/firecracker-v1.15.1-x86_64/vm1/root
+sudo umount /srv/jailer/firecracker-v1.17.0-x86_64/vm1/root/rootfs.ext4
+sudo umount /srv/jailer/firecracker-v1.17.0-x86_64/vm1/root/overlay.ext4
+sudo umount /srv/jailer/firecracker-v1.17.0-x86_64/vm1/root
 
 # Remove chroot
-sudo rm -rf /srv/jailer/firecracker-v1.15.1-x86_64/vm1
+sudo rm -rf /srv/jailer/firecracker-v1.17.0-x86_64/vm1
 ```
 
 ## File Reference
@@ -534,12 +570,13 @@ VM settings, paths, and network parameters.
 ### init_base.sh
 
 Builds the base rootfs image from scratch:
-- Downloads Firecracker-compatible kernel
+
+- Downloads the prebuilt Firecracker CI guest kernel (verifies FUSE + NFSv4)
 - Runs debootstrap for Debian Trixie
 - Installs system packages and utilities
 - Configures SSH, networking, and overlay-init
-- Installs Node.js, OpenCode, Python, and uv
-- Configures OpenCode with `config/opencode/config.json`
+- Installs Node.js, Pi Coding Agent + packages, Python, and uv
+- Installs Pi config, extensions, and prompts from `config/pi/`
 - Injects environment variables from `.env` into the VM
 - Generates ext4 image
 
@@ -549,6 +586,7 @@ Builds the base rootfs image from scratch:
 ### create_overlay.sh
 
 Creates a new writable overlay on top of the base rootfs:
+
 - Creates an 8G sparse ext4 image
 - Pre-creates overlay directories for overlay-init
 - Records base rootfs checksum for compatibility checking
@@ -560,12 +598,14 @@ Creates a new writable overlay on top of the base rootfs:
 ### extract.sh
 
 Extracts files from an overlay to the host (VM must be stopped):
+
 - Checks and repairs dirty ext4 journals
 - Mounts overlay in read-only mode after journal replay
 - Only extracts files from the overlay layer (not base rootfs)
 - Can list changed files without extracting
 
 **Usage:**
+
 ```bash
 # Extract files
 ./extract.sh <overlay_name> <vm_path> [host_destination]
@@ -578,10 +618,12 @@ Extracts files from an overlay to the host (VM must be stopped):
 ```
 
 **Options:**
+
 - `-l, --list` — List changed files instead of extracting
 - `-y, --yes` — Automatically repair filesystem if dirty
 
 **Examples:**
+
 ```bash
 ./extract.sh my-project /root/output.csv
 ./extract.sh my-project /root/results/ ~/backups/
@@ -591,21 +633,25 @@ Extracts files from an overlay to the host (VM must be stopped):
 ### inject.sh
 
 Copies files from the host into an overlay (VM must be stopped):
+
 - Checks and repairs dirty ext4 journals (automatic)
 - Mounts overlay in read-write mode
 - Sets file ownership (default: root:root)
 - Creates parent directories as needed
 
 **Usage:**
+
 ```bash
 ./inject.sh <overlay_name> <host_path> <vm_path>
 ```
 
 **Options:**
+
 - `-u, --uid <UID>` — Set file owner UID (default: 0)
 - `-g, --gid <GID>` — Set file group GID (default: 0)
 
 **Examples:**
+
 ```bash
 ./inject.sh my-project ./config.yaml /root/config.yaml
 ./inject.sh my-project ./scripts/ /root/scripts/
@@ -617,6 +663,7 @@ Copies files from the host into an overlay (VM must be stopped):
 ### start.sh
 
 Starts a Firecracker VM with the specified overlay:
+
 - Validates overlay compatibility
 - Sets up network namespace with routing/NAT
 - Configures firewall rules for VM access to host services
@@ -630,6 +677,7 @@ Starts a Firecracker VM with the specified overlay:
 ### cleanup.sh
 
 Stops the VM and cleans up all resources:
+
 - Terminates Firecracker/jailer processes
 - Removes network namespace and veth pair
 - Cleans iptables rules
@@ -639,3 +687,13 @@ Stops the VM and cleans up all resources:
 - Resets overlay file ownership
 
 **Usage:** `sudo ./cleanup.sh`
+
+### rescue.md
+
+Troubleshooting guide for recovering from `init_base.sh` crashes. If the build
+script is interrupted mid-debootstrap, `/proc`, `/sys`, and `/dev` may remain
+mounted inside `base/debian-trixie-rootfs/`, blocking subsequent runs. Covers:
+
+- Detecting stale mounts inside the rootfs working directory
+- Manual cleanup steps (`sudo umount` for each mount, then `sudo rm -rf`)
+- The EXIT cleanup trap in `init_base.sh` that should prevent this issue

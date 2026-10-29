@@ -1,0 +1,143 @@
+#!/bin/sh
+# OverlayFS init script for Firecracker
+# Requires: /overlay, /rom, /mnt directories in base rootfs
+# Requires: overlay_root=vdb (or "ram") in kernel boot args
+
+OVERLAY_DEVICE="${overlay_root}"
+
+# Mount essential filesystems early
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev
+
+# Wait for devices to settle
+sleep 0.5
+
+# Mount the overlay device or use tmpfs
+if [ "$OVERLAY_DEVICE" = "ram" ]; then
+    echo "Using tmpfs overlay (ephemeral)"
+    mount -t tmpfs tmpfs /overlay
+else
+    echo "Mounting overlay device: /dev/$OVERLAY_DEVICE"
+
+    # Wait for overlay device to appear
+    MAX_WAIT=30
+    WAITED=0
+    while [ $WAITED -lt $MAX_WAIT ]; do
+        if [ -b "/dev/$OVERLAY_DEVICE" ]; then
+            break
+        fi
+        sleep 0.5
+        WAITED=$((WAITED + 1))
+    done
+
+    if [ ! -b "/dev/$OVERLAY_DEVICE" ]; then
+        echo "ERROR: Overlay device /dev/$OVERLAY_DEVICE not found after ${MAX_WAIT}s"
+        echo "Available block devices:"
+        ls -la /dev/vd* /dev/sd* 2>/dev/null || true
+        echo "Falling back to read-only base rootfs"
+        umount /proc /sys /dev 2>/dev/null || true
+        exec /sbin/init
+    fi
+
+    # Check if filesystem needs checking (was it cleanly unmounted?)
+    # dumpe2fs returns: "Filesystem state: clean" or "not clean"
+    FS_STATE=$(dumpe2fs -h "/dev/$OVERLAY_DEVICE" 2>/dev/null | grep "Filesystem state" | head -1)
+    NEEDS_FSCK=0
+
+    if [ -z "$FS_STATE" ]; then
+        echo "WARNING: Could not read filesystem state, running e2fsck..."
+        NEEDS_FSCK=1
+    elif echo "$FS_STATE" | grep -q "not clean"; then
+        echo "Filesystem was not cleanly unmounted, running e2fsck..."
+        NEEDS_FSCK=1
+    elif echo "$FS_STATE" | grep -q "with errors"; then
+        echo "Filesystem has errors, running e2fsck..."
+        NEEDS_FSCK=1
+    fi
+
+    # Only run e2fsck if needed
+    if [ $NEEDS_FSCK -eq 1 ]; then
+        # -p = automatic repair
+        # Exit codes: 0=clean, 1=errors corrected, 2=corrected+reboot, 4+=uncorrected
+        e2fsck -p "/dev/$OVERLAY_DEVICE"
+        E2FSCK_RC=$?
+
+        if [ $E2FSCK_RC -ge 4 ]; then
+            echo "WARNING: e2fsck could not fully repair overlay (rc=$E2FSCK_RC)"
+            echo "Mounting read-only as precaution"
+            MOUNT_OPTIONS="ro"
+        elif [ $E2FSCK_RC -eq 2 ]; then
+            echo "Filesystem errors corrected, reboot recommended (continuing)"
+            MOUNT_OPTIONS="rw"
+        elif [ $E2FSCK_RC -eq 1 ]; then
+            echo "Filesystem errors corrected"
+            MOUNT_OPTIONS="rw"
+        else
+            echo "Filesystem check passed"
+            MOUNT_OPTIONS="rw"
+        fi
+    else
+        echo "Filesystem is clean, skipping e2fsck"
+        MOUNT_OPTIONS="rw"
+    fi
+
+    # Mount with appropriate options
+    # errors=remount-ro protects against runtime corruption
+    mount -o ${MOUNT_OPTIONS},errors=remount-ro "/dev/$OVERLAY_DEVICE" /overlay
+
+    if [ $? -ne 0 ]; then
+        echo "ERROR: Failed to mount /dev/$OVERLAY_DEVICE"
+        echo "Falling back to read-only base rootfs"
+        umount /proc /sys /dev 2>/dev/null || true
+        exec /sbin/init
+    fi
+
+    # Double-check overlay is writable before we set up OverlayFS
+    if [ "$MOUNT_OPTIONS" = "ro" ] || ! touch /overlay/.writable_test 2>/dev/null; then
+        echo "WARNING: Overlay mounted read-only, cannot create writable overlay"
+        rm -f /overlay/.writable_test 2>/dev/null
+        echo "Booting from base rootfs only (changes will not persist)"
+        # Skip overlay and boot directly from base
+        umount /overlay 2>/dev/null || true
+        umount /proc /sys /dev 2>/dev/null || true
+        exec /sbin/init
+    fi
+    rm -f /overlay/.writable_test
+fi
+
+# Ensure overlay directories exist
+mkdir -p /overlay/root /overlay/work
+
+# Set up OverlayFS (lowerdir=/ is the read-only base)
+echo "Setting up OverlayFS..."
+if ! mount -o noatime,lowerdir=/,upperdir=/overlay/root,workdir=/overlay/work \
+    -t overlay overlay /mnt; then
+    echo "ERROR: OverlayFS mount failed, falling back to base rootfs"
+    umount /overlay 2>/dev/null || true
+    umount /proc /sys /dev 2>/dev/null || true
+    exec /sbin/init
+fi
+
+# Move mounts into new root before pivot
+mkdir -p /mnt/overlay /mnt/rom /mnt/proc /mnt/sys /mnt/dev
+
+mount --move /overlay /mnt/overlay
+mount --move /proc /mnt/proc
+mount --move /sys /mnt/sys
+mount --move /dev /mnt/dev
+
+# Pivot to the overlay root
+echo "Pivoting to overlay root..."
+cd /mnt
+pivot_root . rom
+
+# now / is the overlay, /rom is the base rootfs
+cd /
+
+# Ensure /etc/mtab is a symlink to /proc/mounts for systemd
+ln -sf /proc/mounts /etc/mtab 2>/dev/null || true
+
+# Execute real init system
+echo "Starting init from overlay..."
+exec /sbin/init

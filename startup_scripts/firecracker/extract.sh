@@ -27,7 +27,7 @@ usage() {
     echo "  $0 my-project --list -y    (auto-repair if dirty)"
     echo ""
     echo "Available overlays:"
-    ls -1 "${OVERLAY_DIR}/" 2>/dev/null | grep '\.ext4$' | sed 's/\.ext4$//' || echo "  (none)"
+    list_overlays
     exit 1
 }
 
@@ -74,46 +74,13 @@ if [ ! -f "$OVERLAY_PATH" ]; then
     exit 1
 fi
 
-# ============================================================
-# Helper: Check and repair ext4 filesystem
-# ============================================================
-check_and_repair() {
-    local img="$1"
-
-    local fs_state
-    fs_state=$(sudo dumpe2fs -h "$img" 2>/dev/null | grep "Filesystem state" | head -1 || true)
-
-    if echo "$fs_state" | grep -q "not clean"; then
-        echo "Overlay has a dirty journal (VM did not unmount cleanly)."
-        echo ""
-
-        if [ "$AUTO_REPAIR" = true ]; then
-            echo "Auto-repairing with e2fsck..."
-        else
-            echo "To extract files, the journal must be replayed."
-            echo ""
-            echo "Options:"
-            echo "  1. Re-run with -y to auto-repair"
-            echo "  2. Manual repair: sudo e2fsck -y $img"
-            echo ""
-            read -p "Run e2fsck now? [y/N] " response
-            if [[ ! "$response" =~ ^[Yy]$ ]]; then
-                echo "Aborted."
-                return 1
-            fi
-        fi
-
-        echo "Running e2fsck -p (automatic repair)..."
-        sudo e2fsck -p "$img" || {
-            echo "WARNING: e2fsck returned errors, trying full check..."
-            sudo e2fsck -y "$img"
-        }
-        echo "Filesystem repaired."
-    else
-        echo "Filesystem is clean."
-    fi
-    return 0
-}
+# Safety check (applies to both list and extract modes: e2fsck/mounting a
+# live overlay corrupts it)
+if mountpoint -q "$CHROOT_DIR" 2>/dev/null; then
+    echo "ERROR: Overlay is mounted by a running VM."
+    echo "Stop the VM first: sudo ./cleanup.sh"
+    exit 1
+fi
 
 # ============================================================
 # Helper: Mount overlay safely (read-write for journal, then read-only)
@@ -199,13 +166,6 @@ if [[ ! "$VM_PATH" =~ ^/ ]]; then
     exit 1
 fi
 
-# Safety check
-if mountpoint -q "/srv/jailer/${FC_BINARY_NAME}/${VM_ID}/root" 2>/dev/null; then
-    echo "ERROR: Overlay is mounted by a running VM."
-    echo "Stop the VM first: sudo ./cleanup.sh"
-    exit 1
-fi
-
 echo "Extracting: $VM_PATH"
 echo "From overlay: $OVERLAY_NAME"
 echo "To: $DEST_DIR"
@@ -254,10 +214,11 @@ mkdir -p "$DEST_DIR"
 # Copy the file or directory
 sudo cp -a "$SOURCE_PATH" "$DEST_DIR/"
 
-# Fix ownership
+# Fix ownership of only the copied entry, not the whole destination
+EXTRACTED_NAME=$(basename "$VM_PATH")
 CURRENT_USER=$(id -u)
 CURRENT_GROUP=$(id -g)
-sudo chown -R ${CURRENT_USER}:${CURRENT_GROUP} "$DEST_DIR"
+sudo chown -R ${CURRENT_USER}:${CURRENT_GROUP} "${DEST_DIR}/${EXTRACTED_NAME}"
 
 # Show result
 echo ""
@@ -265,7 +226,6 @@ echo "Done!"
 echo ""
 
 # Check the destination (owned by current user, no permission issues)
-EXTRACTED_NAME=$(basename "$VM_PATH")
 if [ -d "${DEST_DIR}/${EXTRACTED_NAME}" ]; then
     echo "Extracted directory: ${EXTRACTED_NAME}/"
     FILE_COUNT=$(find "$DEST_DIR" -type f | wc -l)
