@@ -1,0 +1,31 @@
+{
+  "host": "0.0.0.0",
+  "port": 8001,
+  "backend": "cuda",
+  "device": 0,
+  "threads": 14,
+  "lazy_load": false,
+  "max_loaded_models": 0,
+  "models": [
+    {
+      "id": "qwen3-asr",
+      "family": "qwen3_asr",
+      "task": "asr",
+      "mode": "offline",
+      "path": "${MODELS_DIR}/qwen3-asr-1.7b-q8_0.gguf",
+      "session_options": {
+        "qwen3_asr.forced_aligner_path": "${MODELS_DIR}/qwen3-forced-aligner-0.6b-q8_0.gguf"
+      },
+      "default_request_options": {
+        "return_timestamps": true
+      }
+    },
+    {
+      "id": "nemotron-3-diar",
+      "family": "nemotron_3_diar",
+      "task": "diar",
+      "mode": "offline",
+      "path": "${MODELS_DIR}/nemotron-3-diarization-bf16.gguf"
+    }
+  ]
+}

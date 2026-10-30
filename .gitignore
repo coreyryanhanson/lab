@@ -1,3 +1,5 @@
+.env
+
 startup_scripts/firecracker/base/**
 startup_scripts/firecracker/extracted-*/**
 startup_scripts/firecracker/keys/**
