@@ -75,9 +75,14 @@ if [ ! -f "$OVERLAY_PATH" ]; then
 fi
 
 # Safety check (applies to both list and extract modes: e2fsck/mounting a
-# live overlay corrupts it)
-if mountpoint -q "$CHROOT_DIR" 2>/dev/null; then
-    echo "ERROR: Overlay is mounted by a running VM."
+# live overlay corrupts it).
+# Check the overlay FILE, not the jailer chroot: CHROOT_DIR is shared by
+# every VM (VM_ID is hardcoded) and start.sh bind-mounts it onto itself,
+# so any running VM makes it a mountpoint. Firecracker opens the overlay
+# directly (no loop device), so detect use via open file descriptor or a
+# bind mount whose source is this file.
+if sudo fuser -s "$OVERLAY_PATH" 2>/dev/null || findmnt -rn -S "$OVERLAY_PATH" >/dev/null 2>&1; then
+    echo "ERROR: Overlay file is in use by a running VM: $OVERLAY_PATH"
     echo "Stop the VM first: sudo ./cleanup.sh"
     exit 1
 fi
