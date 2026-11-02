@@ -26,7 +26,7 @@ podman run --rm -it \
       -DENGINE_ENABLE_CUDA_GRAPHS=ON \
       -DCMAKE_CUDA_ARCHITECTURES=89 \
       -DAUDIOCPP_MODEL_SET=custom \
-      -DAUDIOCPP_MODELS=nemotron_3_diar,qwen3_asr \
+      -DAUDIOCPP_MODELS=nemotron_3_diar,nemotron_transcribe,qwen3_asr \
       -DAUDIOCPP_BUILD_NATIVE_MODEL_MANAGER=ON && \
     cmake --build build -j\$(nproc) \
       --target audiocpp_cli \
