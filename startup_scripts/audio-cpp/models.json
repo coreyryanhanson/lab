@@ -21,6 +21,22 @@
       }
     },
     {
+      "id": "nemotron-transcribe",
+      "family": "nemotron_transcribe",
+      "task": "asr",
+      "mode": "offline",
+      "path": "${MODELS_DIR}/nemotron-transcribe-30b-a4b-experts-IQ4_NL.gguf",
+      "session_options": {
+        "nemotron_transcribe.disk_experts": "true",
+        "nemotron_transcribe.pin_experts": "true",
+        "nemotron_transcribe.expert_cache_size": "8",
+        "nemotron_transcribe.prefill_batch_size": "1024"
+      },
+      "default_request_options": {
+        "return_timestamps": true
+      }
+    },
+    {
       "id": "nemotron-3-diar",
       "family": "nemotron_3_diar",
       "task": "diar",
