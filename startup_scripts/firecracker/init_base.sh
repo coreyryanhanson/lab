@@ -386,6 +386,11 @@ echo "  Environment variables written to /etc/profile.d/99-vm-env.sh"
 grep -q '99-vm-env.sh' "$ROOTFS_DIR/root/.bashrc" 2>/dev/null ||
 	sudo tee -a "$ROOTFS_DIR/root/.bashrc" >/dev/null << 'BASHRCEOF'
 
+# Pi inline images: terminal detection fails across the SSH/herdr path, so
+# force the kitty graphics protocol (safe: the only outer terminals here are
+# kitty or herdr-in-kitty, both graphics-capable)
+export PI_IMAGE_PROTOCOL=kitty
+
 # VM environment variables (API keys, model config)
 source /etc/profile.d/99-vm-env.sh
 BASHRCEOF
