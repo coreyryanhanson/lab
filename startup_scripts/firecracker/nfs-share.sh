@@ -30,6 +30,10 @@
 
 set -e
 
+# sbin tools (exportfs, iptables) must be findable even when run unsudoed —
+# a user PATH often lacks /usr/sbin.
+PATH="$PATH:/usr/sbin:/sbin"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/config.sh"
 
