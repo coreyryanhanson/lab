@@ -116,9 +116,7 @@ Both clients (`sshfs`, `nfs-common`) and the SFTP private key
 image by `init_base.sh`, so the VM side is just the two mounts:
 
 ```bash
-sshfs -p 2022 -o ro,reconnect,ServerAliveInterval=15,ServerAliveCountMax=3,kernel_cache,cache=yes,entry_timeout=120,attr_timeout=120,compression=no,IdentityFile=/root/.ssh/rclone_sftp_ed25519,StrictHostKeyChecking=no rag-reader@192.168.100.1:/ /mnt/library
-
-mount -t nfs4 192.168.100.1:/srv/rag-scrape /mnt/scrape
+sshfs -p 2022 -o ro,reconnect,ServerAliveInterval=15,ServerAliveCountMax=3,kernel_cache,cache=yes,entry_timeout=120,attr_timeout=120,compression=no,IdentityFile=/root/.ssh/rclone_sftp_ed25519,StrictHostKeyChecking=no rag-reader@192.168.100.1:/ /mnt/library && mount -t nfs4 192.168.100.1:/srv/rag-scrape /mnt/scrape
 ```
 
 (Kept on one line deliberately — line-continuation backslashes in copied

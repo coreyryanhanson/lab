@@ -30,6 +30,10 @@
 
 set -e
 
+# sbin tools (exportfs) must be findable even when run unsudoed —
+# a user PATH often lacks /usr/sbin.
+PATH="$PATH:/usr/sbin:/sbin"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/config.sh"
 
@@ -249,8 +253,7 @@ cmd_status() {
 
 cmd_vm() {
     echo "In the VM (both clients and the key are preinstalled in the base image):"
-    echo "  sshfs -p ${RO_PORT} -o ro,reconnect,ServerAliveInterval=15,ServerAliveCountMax=3,kernel_cache,cache=yes,entry_timeout=120,attr_timeout=120,compression=no,IdentityFile=/root/.ssh/rclone_sftp_ed25519,StrictHostKeyChecking=no ${RO_USER}@${VETH_HOST_IP}:/ /mnt/library"
-    echo "  mount -t nfs4 ${VETH_HOST_IP}:${RW_EXPORT} /mnt/scrape"
+    echo "  sshfs -p ${RO_PORT} -o ro,reconnect,ServerAliveInterval=15,ServerAliveCountMax=3,kernel_cache,cache=yes,entry_timeout=120,attr_timeout=120,compression=no,IdentityFile=/root/.ssh/rclone_sftp_ed25519,StrictHostKeyChecking=no ${RO_USER}@${VETH_HOST_IP}:/ /mnt/library && mount -t nfs4 ${VETH_HOST_IP}:${RW_EXPORT} /mnt/scrape"
     echo ""
     echo "The served path (${RO_PATH}) appears as / inside the sshfs mount."
 }
