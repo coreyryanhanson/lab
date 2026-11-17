@@ -234,7 +234,13 @@ sudo ip link set $VETH_HOST up
 sudo ip netns exec $NETNS ip addr add ${VETH_NS_IP}/24 dev $VETH_NS
 sudo ip netns exec $NETNS ip link set $VETH_NS up
 sudo ip netns exec $NETNS ip link set lo up
-sudo ip netns exec $NETNS ip tuntap add dev $TAP_DEV mode tap
+# The tap must be owned by the uid/gid firecracker runs as: kernels carrying
+# "tun: Require CAP_NET_ADMIN to attach to an ownerless device" (ffdf678dd166)
+# reject TUNSETIFF on unowned taps for unprivileged processes, which killed the
+# boot with TapOpen(IfreqExecuteError(EPERM)). Owner-matched taps are also
+# accepted by pre-change kernels, so this stays portable.
+sudo ip netns exec $NETNS ip tuntap add dev $TAP_DEV mode tap \
+    user ${JAILER_UID} group ${JAILER_GID}
 sudo ip netns exec $NETNS ip addr add ${TAP_IP}${MASK} dev $TAP_DEV
 sudo ip netns exec $NETNS ip link set $TAP_DEV up
 sudo ip netns exec $NETNS ip route add default via ${VETH_HOST_IP}
