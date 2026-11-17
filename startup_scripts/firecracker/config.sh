@@ -5,6 +5,11 @@
 # Sourced by every other script, so its variables are read elsewhere;
 # the linter cannot see that and flags them all as unused.
 # shellcheck disable=SC2034
+
+# A user shell's PATH may lack /usr/sbin:/sbin (sysctl lives there), and not
+# every privileged call in the scripts goes through sudo (sudo's secure_path
+# would cover it). Export so child processes inherit it.
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH}"
 # Network namespace and interfaces
 NETNS="fc-vm1"
 VETH_HOST="fc-veth0"

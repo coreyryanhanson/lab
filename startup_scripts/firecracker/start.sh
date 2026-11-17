@@ -203,11 +203,23 @@ sudo tee "$JAILER_CONFIG" > /dev/null << EOF
   "machine-config": {
     "vcpu_count": ${VM_VCPUS},
     "mem_size_mib": ${VM_MEM_MIB}
+  },
+  "logger": {
+    "log_path": "/fc.log",
+    "level": "Info",
+    "show_level": true,
+    "show_log_origin": true
   }
 }
 EOF
 
 sudo chown ${JAILER_UID}:${JAILER_GID} "$JAILER_CONFIG"
+
+# Firecracker's own log, reachable from inside the jailer chroot. Without a
+# logger section, a daemonized firecracker that dies right after detaching
+# its stdio leaves NOTHING behind — not even the reason it died.
+sudo touch "${CHROOT_DIR}/fc.log"
+sudo chown ${JAILER_UID}:${JAILER_GID} "${CHROOT_DIR}/fc.log"
 
 # ============================================================
 # Set up networking
@@ -222,7 +234,13 @@ sudo ip link set $VETH_HOST up
 sudo ip netns exec $NETNS ip addr add ${VETH_NS_IP}/24 dev $VETH_NS
 sudo ip netns exec $NETNS ip link set $VETH_NS up
 sudo ip netns exec $NETNS ip link set lo up
-sudo ip netns exec $NETNS ip tuntap add dev $TAP_DEV mode tap
+# The tap must be owned by the uid/gid firecracker runs as: kernels carrying
+# "tun: Require CAP_NET_ADMIN to attach to an ownerless device" (ffdf678dd166)
+# reject TUNSETIFF on unowned taps for unprivileged processes, which killed the
+# boot with TapOpen(IfreqExecuteError(EPERM)). Owner-matched taps are also
+# accepted by pre-change kernels, so this stays portable.
+sudo ip netns exec $NETNS ip tuntap add dev $TAP_DEV mode tap \
+    user ${JAILER_UID} group ${JAILER_GID}
 sudo ip netns exec $NETNS ip addr add ${TAP_IP}${MASK} dev $TAP_DEV
 sudo ip netns exec $NETNS ip link set $TAP_DEV up
 sudo ip netns exec $NETNS ip route add default via ${VETH_HOST_IP}
@@ -269,6 +287,13 @@ sudo sysctl -w "net.ipv4.conf.${VETH_HOST}.rp_filter=0" > /dev/null 2>&1 || true
 # ============================================================
 # Start Firecracker with jailer
 # ============================================================
+# FC_FOREGROUND=1 drops --daemonize so a dying firecracker can be watched
+# live (the ssh poll below then never runs; test from a second terminal).
+DAEMONIZE_ARGS=()
+if [ -z "${FC_FOREGROUND:-}" ]; then
+    DAEMONIZE_ARGS=(--daemonize)
+fi
+
 echo "Starting Firecracker VM..."
 
 sudo $JAILER \
@@ -277,7 +302,7 @@ sudo $JAILER \
   --uid $JAILER_UID \
   --gid $JAILER_GID \
   --netns /var/run/netns/$NETNS \
-  --daemonize \
+  "${DAEMONIZE_ARGS[@]}" \
   -- --config-file /config.json \
   >> "${SCRIPT_DIR}/firecracker-${VM_ID}.log" 2>&1
 

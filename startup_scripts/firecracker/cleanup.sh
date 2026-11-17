@@ -60,9 +60,14 @@ if [ -n "$HOST_IFACE" ]; then
     sudo rm -f "${HOST_IFACE_STATE}"
 fi
 
-# Restore the host's forwarding state to its pre-start value
-if [ -f "${IP_FORWARD_STATE}" ]; then
+# Restore the host's forwarding state to its pre-start value. An empty file
+# means the state was never captured (e.g. sysctl was missing from PATH);
+# feeding the empty value to sysctl -w would just error out.
+if [ -s "${IP_FORWARD_STATE}" ]; then
     sudo sysctl -w "net.ipv4.ip_forward=$(cat "${IP_FORWARD_STATE}")" > /dev/null
+    sudo rm -f "${IP_FORWARD_STATE}"
+elif [ -f "${IP_FORWARD_STATE}" ]; then
+    echo "WARNING: ${IP_FORWARD_STATE} is empty; net.ipv4.ip_forward left unchanged (likely still 1)." >&2
     sudo rm -f "${IP_FORWARD_STATE}"
 fi
 
